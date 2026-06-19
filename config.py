@@ -26,10 +26,13 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-assert (
-    len(settings.jwt_secret) >= 32
-    and settings.jwt_secret not in (
-        "dev_secret_change_in_production",
-        "change_this_to_a_long_random_string_in_production",
+_JWT_FORBIDDEN = (
+    "dev_secret_change_in_production",
+    "change_this_to_a_long_random_string_in_production",
+)
+if len(settings.jwt_secret) < 32 or settings.jwt_secret in _JWT_FORBIDDEN:
+    raise RuntimeError(
+        "JWT_SECRET is not set to a secure value. "
+        "Set JWT_SECRET (32+ chars) in the environment. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(64))\""
     )
-), "Set a real JWT_SECRET in .env (use: python -c \"import secrets; print(secrets.token_hex(64))\")"

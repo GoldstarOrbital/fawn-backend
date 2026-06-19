@@ -20,7 +20,57 @@ if os.environ.get("SENTRY_DSN"):
 
 _START_TIME = time.time()
 
-Base.metadata.create_all(bind=engine)
+
+def _init_db_schema():
+    """Create tables and patch any columns added after the initial deploy.
+
+    SQLAlchemy's create_all() only creates missing TABLES — it never adds
+    missing COLUMNS to an existing table. On Railway the `waitlist` table
+    was originally created without `source` / `referral_code`, so any query
+    that selects those columns now returns 500. Patch them in idempotently.
+    """
+    from sqlalchemy import inspect, text
+
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        # Don't crash boot if DB is briefly unreachable during deploy.
+        print(f"[startup] create_all failed (continuing): {e}")
+        return
+
+    try:
+        inspector = inspect(engine)
+
+        def _patch(table: str, col: str, ddl: str):
+            try:
+                cols = {c["name"] for c in inspector.get_columns(table)}
+            except Exception:
+                return
+            if col in cols:
+                return
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {ddl}'))
+                print(f"[startup] added missing column {table}.{col}")
+            except Exception as e:
+                print(f"[startup] failed to add {table}.{col}: {e}")
+
+        # waitlist columns added after initial schema
+        _patch("waitlist", "source", "source VARCHAR")
+        _patch("waitlist", "referral_code", "referral_code VARCHAR")
+        _patch("waitlist", "name", "name VARCHAR")
+
+        # users columns added after initial schema
+        _patch("users", "referral_code", "referral_code VARCHAR")
+        _patch("users", "referred_by", "referred_by VARCHAR")
+        _patch("users", "referral_count", "referral_count INTEGER DEFAULT 0 NOT NULL")
+        _patch("users", "phone", "phone VARCHAR")
+        _patch("users", "is_student", "is_student BOOLEAN DEFAULT FALSE")
+    except Exception as e:
+        print(f"[startup] schema patch pass failed (continuing): {e}")
+
+
+_init_db_schema()
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 

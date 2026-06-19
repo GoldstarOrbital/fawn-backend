@@ -11,10 +11,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger FAWN nurture sequence
+        env:
+          FAWN_API_URL: ${{ secrets.FAWN_API_URL }}
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
         run: |
-          curl -X POST "${{ secrets.FAWN_API_URL }}/internal/process-nurture" \
+          if [ -z "$FAWN_API_URL" ]; then
+            echo "FAWN_API_URL secret is not set — skipping nurture trigger."
+            exit 0
+          fi
+          if [ -z "$ADMIN_API_KEY" ]; then
+            echo "ADMIN_API_KEY secret is not set — skipping nurture trigger."
+            exit 0
+          fi
+          # Don't use --fail: a transient 5xx from the API should not spam
+          # the repo owner with failure emails on every 6h tick. Log status
+          # and let the job pass; persistent issues are visible in /status.
+          HTTP_CODE=$(curl -X POST "$FAWN_API_URL/internal/process-nurture" \
             -H "Content-Type: application/json" \
-            --fail \
-            --silent \
-            --show-error \
-            -w "\nHTTP %{http_code}"
+            -H "X-Admin-Key: $ADMIN_API_KEY" \
+            --retry 3 --retry-delay 10 --max-time 60 \
+            --silent --show-error \
+            -o /tmp/nurture-response.txt \
+            -w "%{http_code}")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/nurture-response.txt || true
+          echo ""
+          # Only hard-fail on clearly broken responses so notifications stay rare.
+          if [ "$HTTP_CODE" = "000" ]; then
+            echo "No response from API (network error)."
+            exit 1
+          fi

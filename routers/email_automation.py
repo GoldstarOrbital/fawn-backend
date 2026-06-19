@@ -26,6 +26,7 @@ from email_templates import (
     build_email_4,
     build_email_5,
 )
+from routers.admin import require_admin_key
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -76,11 +77,14 @@ def _already_sent(db: Session, email: str, email_number: int) -> bool:
 def _log_sent(db: Session, email: str, email_number: int):
     log = EmailLog(email=email, email_number=email_number)
     db.add(log)
-    db.commit()
+    # NOTE: caller commits in a batch — do not commit per-row mid-iteration.
 
 
 @router.post("/process-nurture")
-def process_nurture(db: Session = Depends(get_db)):
+def process_nurture(
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
     """
     Iterate every waitlist entry and send any nurture emails that are due
     but have not yet been sent.
@@ -90,38 +94,66 @@ def process_nurture(db: Session = Depends(get_db)):
     using_test_domain = "resend.dev" in settings.from_email
     now = datetime.now(timezone.utc)
 
-    entries = db.query(WaitlistEntry).all()
+    # Snapshot all entries to plain dicts up front so subsequent commits
+    # can't expire/detach the ORM rows we're iterating.
+    raw_entries = db.query(WaitlistEntry).all()
+    entries = [
+        {
+            "email": e.email,
+            "name": e.name,
+            "created_at": (
+                e.created_at.replace(tzinfo=timezone.utc)
+                if e.created_at is not None and e.created_at.tzinfo is None
+                else e.created_at
+            ),
+        }
+        for e in raw_entries
+        if e.created_at is not None
+    ]
+
     sent_count = 0
     skipped_count = 0
 
     for entry in entries:
-        # Make created_at timezone-aware if stored naive
-        created = entry.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+        created = entry["created_at"]
+        email_addr = entry["email"]
+        entry_name = entry["name"]
 
         for step in NURTURE_SCHEDULE:
             due_at = created + timedelta(days=step["days_after"])
             if now < due_at:
                 continue  # not due yet
 
-            if _already_sent(db, entry.email, step["email_number"]):
+            if _already_sent(db, email_addr, step["email_number"]):
                 skipped_count += 1
                 continue
 
-            name = entry.name or entry.email.split("@")[0]
+            name = entry_name or email_addr.split("@")[0]
             subject, html = step["build_fn"](name)
 
             if using_test_domain:
-                subject = f"[TO: {entry.email}] {subject}"
+                subject = f"[TO: {email_addr}] {subject}"
                 recipient = OWNER_EMAIL
             else:
-                recipient = entry.email
+                recipient = email_addr
 
             success = _send_email(subject, html, recipient)
             if success:
-                _log_sent(db, entry.email, step["email_number"])
+                _log_sent(db, email_addr, step["email_number"])
                 sent_count += 1
+
+    # Single commit at the end — avoids mid-iteration session churn.
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        return {
+            "status": "partial",
+            "sent": sent_count,
+            "already_sent_skipped": skipped_count,
+            "total_entries": len(entries),
+            "commit_error": str(e),
+        }
 
     return {
         "status": "ok",
