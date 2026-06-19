@@ -1,7 +1,7 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    # SQLite by default — no installation needed. Change to postgresql://... when ready.
     database_url: str = "sqlite:///./fawn.db"
     unit_api_token: str = "UNIT_TOKEN_NOT_SET"
     unit_base_url: str = "https://api.s.unit.sh"
@@ -11,6 +11,14 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60
     resend_api_key: str = ""
     from_email: str = "alex@getfawn.com"
+
+    @field_validator("database_url")
+    @classmethod
+    def fix_postgres_dialect(cls, v: str) -> str:
+        # Railway provides postgresql:// but SQLAlchemy 2.x needs postgresql+psycopg2://
+        if v.startswith("postgresql://"):
+            return v.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return v
 
     class Config:
         env_file = ".env"
