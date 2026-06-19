@@ -1,4 +1,6 @@
 import time
+import os
+import sentry_sdk
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -6,8 +8,15 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation
 from config import settings
+
+if os.environ.get("SENTRY_DSN"):
+    sentry_sdk.init(
+        dsn=os.environ["SENTRY_DSN"],
+        traces_sample_rate=0.2,
+        environment=os.environ.get("RAILWAY_ENVIRONMENT", "production"),
+    )
 
 _START_TIME = time.time()
 
@@ -57,6 +66,7 @@ app.include_router(news.router)
 app.include_router(waitlist.router)
 app.include_router(referral.router)
 app.include_router(admin.router)
+app.include_router(email_automation.router)
 
 
 @app.get("/health")
