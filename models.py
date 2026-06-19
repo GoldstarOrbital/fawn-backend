@@ -33,5 +33,20 @@ class WaitlistEntry(Base):
     id = Column(String, primary_key=True, default=new_id)
     email = Column(String, unique=True, nullable=False, index=True)
     name = Column(String, nullable=True)
-    source = Column(String, nullable=True, default="landing")   # where they signed up
+    source = Column(String, nullable=True, default="landing")
+    referral_code = Column(String, nullable=True)  # referral code used when joining
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class EmailLog(Base):
+    """Tracks which nurture emails have been sent to each waitlist address.
+
+    Used by the email_automation router to ensure idempotency — each
+    (email, email_number) pair is only ever sent once.
+    """
+    __tablename__ = "email_log"
+
+    id = Column(String, primary_key=True, default=new_id)
+    email = Column(String, nullable=False, index=True)
+    email_number = Column(Integer, nullable=False)   # 2, 3, 4, or 5
+    sent_at = Column(DateTime(timezone=True), server_default=func.now())

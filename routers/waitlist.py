@@ -14,6 +14,7 @@ class WaitlistJoin(BaseModel):
     email: EmailStr
     name: Optional[str] = None
     source: Optional[str] = "landing"
+    referral_code: Optional[str] = None  # ?ref= param from landing page
 
 
 @router.post("/join", status_code=201)
@@ -22,7 +23,7 @@ def join_waitlist(req: WaitlistJoin, db: Session = Depends(get_db)):
     if existing:
         return {"message": "You're already on the list!", "position": _position(db, existing)}
 
-    entry = WaitlistEntry(email=req.email, name=req.name, source=req.source)
+    entry = WaitlistEntry(email=req.email, name=req.name, source=req.source, referral_code=req.referral_code)
     db.add(entry)
     db.commit()
     db.refresh(entry)

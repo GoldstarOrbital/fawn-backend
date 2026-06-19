@@ -6,7 +6,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral
+from routers import auth, accounts, transactions, news, waitlist, referral, admin
 from config import settings
 
 _START_TIME = time.time()
@@ -56,6 +56,7 @@ app.include_router(transactions.router)
 app.include_router(news.router)
 app.include_router(waitlist.router)
 app.include_router(referral.router)
+app.include_router(admin.router)
 
 
 @app.get("/health")

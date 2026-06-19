@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60
     resend_api_key: str = ""
     from_email: str = "alex@getfawn.com"
+    admin_api_key: str = ""
 
     @field_validator("database_url")
     @classmethod
