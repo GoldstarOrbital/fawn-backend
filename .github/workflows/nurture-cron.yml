@@ -1,0 +1,20 @@
+name: Email Nurture Cron
+
+on:
+  schedule:
+    # Runs every 6 hours — catches all 3/7/14/21 day windows without hammering the API
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+jobs:
+  trigger-nurture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger FAWN nurture sequence
+        run: |
+          curl -X POST "${{ secrets.FAWN_API_URL }}/internal/process-nurture" \
+            -H "Content-Type: application/json" \
+            --fail \
+            --silent \
+            --show-error \
+            -w "\nHTTP %{http_code}"
