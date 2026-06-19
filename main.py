@@ -1,6 +1,9 @@
 import time
 import os
-import sentry_sdk
+try:
+    import sentry_sdk
+except ImportError:
+    sentry_sdk = None
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,7 +14,7 @@ from database import engine, Base, SessionLocal
 from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation
 from config import settings
 
-if os.environ.get("SENTRY_DSN"):
+if sentry_sdk and os.environ.get("SENTRY_DSN"):
     sentry_sdk.init(
         dsn=os.environ["SENTRY_DSN"],
         traces_sample_rate=0.2,
