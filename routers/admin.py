@@ -9,7 +9,7 @@ from sqlalchemy import func, cast, Date
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import WaitlistEntry, Referral
+from models import WaitlistEntry
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
