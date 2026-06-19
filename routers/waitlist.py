@@ -5,6 +5,7 @@ from typing import Optional
 
 from database import get_db
 from models import WaitlistEntry
+from email_service import send_waitlist_welcome
 
 router = APIRouter(prefix="/waitlist", tags=["waitlist"])
 
@@ -26,6 +27,7 @@ def join_waitlist(req: WaitlistJoin, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(entry)
     count = db.query(WaitlistEntry).count()
+    send_waitlist_welcome(req.email, count)
     return {"message": "You're on the list!", "position": count}
 
 

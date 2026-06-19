@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev_secret_change_in_production"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
+    resend_api_key: str = ""
+    from_email: str = "alex@getfawn.com"
 
     class Config:
         env_file = ".env"
