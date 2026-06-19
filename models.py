@@ -38,6 +38,47 @@ class WaitlistEntry(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class FoundingMember(Base):
+    """A real customer who paid for a founding-tier offer via Stripe.
+
+    Created by the Stripe webhook on `checkout.session.completed`.
+    Sole source of truth for `founding_sold` counts and member-dashboard data.
+    """
+    __tablename__ = "founding_members"
+
+    id = Column(String, primary_key=True, default=new_id)
+    email = Column(String, nullable=False, index=True)
+    member_number = Column(Integer, nullable=False, index=True)
+    tier = Column(String, nullable=False)  # "founding" | "inner_circle" | "dev_sprint"
+    amount_cents = Column(Integer, nullable=False)
+    stripe_customer_id = Column(String, nullable=True)
+    stripe_session_id = Column(String, nullable=True, unique=True)
+    referral_code_used = Column(String, nullable=True)
+    refunded = Column(Boolean, default=False, nullable=False)
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class StripeEvent(Base):
+    """Idempotency record — every processed Stripe event id is stored here."""
+    __tablename__ = "stripe_events"
+
+    id = Column(String, primary_key=True)  # stripe event.id
+    type = Column(String, nullable=False)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MagicLinkToken(Base):
+    """Short-lived passwordless login tokens for founding-member dashboard."""
+    __tablename__ = "magic_link_tokens"
+
+    id = Column(String, primary_key=True, default=new_id)
+    email = Column(String, nullable=False, index=True)
+    token_hash = Column(String, nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class EmailLog(Base):
     """Tracks which nurture emails have been sent to each waitlist address.
 
