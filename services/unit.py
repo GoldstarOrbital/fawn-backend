@@ -1,10 +1,13 @@
 """
 All Unit BaaS API calls.
-Sandbox base URL: https://api.s.unit.sh
-Docs: https://docs.unit.co
+Sandbox:    https://api.s.unit.sh
+Production: https://api.unit.co
+Switch via UNIT_BASE_URL env var on Railway.
 """
+import re
 import httpx
 from config import settings
+
 
 def _headers():
     return {
@@ -13,34 +16,44 @@ def _headers():
     }
 
 
-async def create_application(full_name: str, email: str, phone: str) -> dict:
+async def create_application(
+    full_name: str,
+    email: str,
+    phone: str,
+    ssn: str,
+    date_of_birth: str,
+    address: "schemas.Address",  # type: ignore[name-defined]
+    occupation: str = "Student",
+) -> dict:
     """
-    Submit an individual application to Unit.
-    In sandbox, SSN 721074426 always returns approved instantly.
-    Returns the application data dict.
+    Submit an individual KYC application to Unit.
+    SSN is passed directly — never stored on our side.
+    Returns the application data dict (type, id, attributes, relationships).
+    Status will be 'approved' (instant) or 'pending' (manual review).
     """
     first, *rest = full_name.strip().split()
     last = " ".join(rest) if rest else "Unknown"
+    phone_digits = re.sub(r"\D", "", phone)[-10:]
 
     payload = {
         "data": {
             "type": "individualApplication",
             "attributes": {
-                "ssn": "721074426",
+                "ssn": ssn,
                 "fullName": {"first": first, "last": last},
-                "dateOfBirth": "2000-01-01",
+                "dateOfBirth": date_of_birth,
                 "address": {
-                    "street": "123 Main St",
-                    "city": "San Francisco",
-                    "state": "CA",
-                    "postalCode": "94105",
-                    "country": "US",
+                    "street": address.street,
+                    "city": address.city,
+                    "state": address.state,
+                    "postalCode": address.postal_code,
+                    "country": address.country,
                 },
                 "email": email,
-                "occupation": "Student",
+                "occupation": occupation,
                 "phone": {
                     "countryCode": "1",
-                    "number": (phone or "5555550100").replace("-", "").replace(" ", "")[:10],
+                    "number": phone_digits,
                 },
             },
         }
@@ -56,6 +69,17 @@ async def create_application(full_name: str, email: str, phone: str) -> dict:
         return resp.json()["data"]
 
 
+async def get_application(unit_application_id: str) -> dict:
+    """Poll the status of a pending application."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.unit_base_url}/applications/{unit_application_id}",
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]
+
+
 async def create_deposit_account(unit_customer_id: str) -> dict:
     """Open a checking deposit account for an existing Unit customer."""
     payload = {
@@ -63,7 +87,9 @@ async def create_deposit_account(unit_customer_id: str) -> dict:
             "type": "depositAccount",
             "attributes": {"depositProduct": "checking"},
             "relationships": {
-                "customer": {"data": {"type": "individualCustomer", "id": unit_customer_id}}
+                "customer": {
+                    "data": {"type": "individualCustomer", "id": unit_customer_id}
+                }
             },
         }
     }
@@ -78,8 +104,7 @@ async def create_deposit_account(unit_customer_id: str) -> dict:
 
 
 async def get_customer_accounts(unit_customer_id: str) -> list:
-    """List all accounts for a Unit customer."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{settings.unit_base_url}/accounts",
             params={"filter[customerId]": unit_customer_id},
@@ -90,14 +115,14 @@ async def get_customer_accounts(unit_customer_id: str) -> list:
 
 
 async def get_account_details(unit_account_id: str) -> dict:
-    """Return routing number, account number, and account name."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{settings.unit_base_url}/accounts/{unit_account_id}",
             headers=_headers(),
         )
         resp.raise_for_status()
-        attrs = resp.json()["data"]["attributes"]
+        data = resp.json()["data"]
+        attrs = data["attributes"]
         return {
             "account_id": unit_account_id,
             "routing_number": attrs.get("routingNumber", ""),
@@ -109,8 +134,7 @@ async def get_account_details(unit_account_id: str) -> dict:
 
 
 async def get_account_balance(unit_account_id: str) -> dict:
-    """Fetch live balance for a Unit deposit account."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{settings.unit_base_url}/accounts/{unit_account_id}",
             headers=_headers(),
@@ -126,8 +150,7 @@ async def get_account_balance(unit_account_id: str) -> dict:
 
 
 async def list_transactions(unit_account_id: str, limit: int = 20) -> list:
-    """Fetch recent transactions for a Unit account."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{settings.unit_base_url}/transactions",
             params={"filter[accountId]": unit_account_id, "page[limit]": limit},
@@ -143,6 +166,7 @@ async def list_transactions(unit_account_id: str, limit: int = 20) -> list:
         direction = 1 if a.get("direction", "").lower() == "credit" else -1
         transactions.append({
             "id": item["id"],
+            "type": item["type"],
             "amount": round((amount_cents / 100) * direction, 2),
             "description": a.get("description", ""),
             "date": a.get("createdAt", "")[:10],

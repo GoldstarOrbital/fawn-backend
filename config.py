@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     from_email: str = "alex@getfawn.com"
     admin_api_key: str = ""
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
 
     @field_validator("database_url")
     @classmethod

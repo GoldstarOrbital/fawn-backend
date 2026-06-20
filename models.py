@@ -20,6 +20,7 @@ class User(Base):
     # Unit identifiers — set after BaaS account creation
     unit_customer_id = Column(String, nullable=True)
     unit_account_id = Column(String, nullable=True)
+    unit_application_id = Column(String, nullable=True)  # set when KYC is pending review
 
     # Referral
     referral_code = Column(String, unique=True, nullable=True, index=True)
