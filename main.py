@@ -11,7 +11,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -63,6 +63,12 @@ def _init_db_schema():
         _patch("waitlist", "referral_code", "referral_code VARCHAR")
         _patch("waitlist", "name", "name VARCHAR")
 
+        # founding_members columns
+        _patch("founding_members", "refunded", "refunded BOOLEAN DEFAULT FALSE NOT NULL")
+
+        # magic_link_tokens — no extra patches needed (create_all handles new tables)
+        # stripe_events — no extra patches needed
+
         # users columns added after initial schema
         _patch("users", "referral_code", "referral_code VARCHAR")
         _patch("users", "referred_by", "referred_by VARCHAR")
@@ -98,7 +104,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Admin-Key"],
 )
 
 
@@ -122,6 +128,7 @@ app.include_router(admin.router)
 app.include_router(email_automation.router)
 app.include_router(public_stats.router)
 app.include_router(stripe_webhook.router)
+app.include_router(member.router)
 
 
 @app.get("/health")
