@@ -17,7 +17,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 import httpx
-import jwt as pyjwt
+from jose import jwt as pyjwt, JWTError, ExpiredSignatureError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
@@ -52,9 +52,9 @@ def _make_jwt(email: str, member_number: int) -> str:
 def _decode_jwt(token: str) -> dict:
     try:
         return pyjwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
-    except pyjwt.ExpiredSignatureError:
+    except ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired — request a new link")
-    except pyjwt.InvalidTokenError:
+    except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
