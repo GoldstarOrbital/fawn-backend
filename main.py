@@ -114,6 +114,9 @@ app.add_middleware(
 )
 
 
+_DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -121,6 +124,17 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(), payment=()"
+    # Swagger/ReDoc load their UI from a CDN, so they need a looser policy.
+    # Every other route is a JSON API with no inline scripts — lock it down fully.
+    if request.url.path.startswith(_DOCS_PATHS):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' cdn.jsdelivr.net 'unsafe-inline'; "
+            "style-src 'self' cdn.jsdelivr.net 'unsafe-inline'; img-src 'self' data: fastapi.tiangolo.com"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     return response
 
 

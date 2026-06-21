@@ -17,16 +17,19 @@ than auto-publishing unverified claims.
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Security, Request, status
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.orm import Session
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from database import get_db
 from models import DealSuggestion
 from services.analytics import capture, EVENTS
 
 router = APIRouter(prefix="/deals", tags=["deals"])
+limiter = Limiter(key_func=get_remote_address)
 
 API_KEY_HEADER = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
@@ -87,7 +90,8 @@ class SuggestionOut(BaseModel):
 
 
 @router.post("/suggest", status_code=201)
-def submit_suggestion(body: SuggestionIn, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def submit_suggestion(request: Request, body: SuggestionIn, db: Session = Depends(get_db)):
     entry = DealSuggestion(
         school=body.school,
         category=body.category,

@@ -18,9 +18,11 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from jose import jwt as pyjwt, JWTError, ExpiredSignatureError
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from database import get_db
 from models import FoundingMember, MagicLinkToken
@@ -28,6 +30,7 @@ from config import settings
 from services.analytics import capture, EVENTS
 
 router = APIRouter(prefix="/member", tags=["member"])
+limiter = Limiter(key_func=get_remote_address)
 
 FAWN_FROM = "FAWN <onboarding@resend.dev>"
 DASHBOARD_BASE = "https://goldstarorbital.github.io/fawn-landing/member.html"
@@ -98,7 +101,8 @@ class MagicLinkRequest(BaseModel):
 # ── endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/request-link")
-def request_magic_link(body: MagicLinkRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def request_magic_link(request: Request, body: MagicLinkRequest, db: Session = Depends(get_db)):
     """Send a one-time magic link to a founding member's email."""
     member = (
         db.query(FoundingMember)
