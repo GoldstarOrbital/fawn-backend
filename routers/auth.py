@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime, timedelta
 from jose import jwt
 import bcrypt
@@ -36,7 +37,7 @@ def _make_token(user_id: str) -> str:
 @router.post("/register", response_model=TokenResponse, status_code=201)
 @limiter.limit("5/minute")
 async def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == req.email).first():
+    if db.query(User).filter(func.lower(User.email) == req.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user = User(
@@ -45,6 +46,7 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
         full_name=req.full_name,
         phone=req.phone,
         is_student=req.is_student,
+        school=req.school,
     )
     db.add(user)
     db.flush()
@@ -95,7 +97,7 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
 def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
+    user = db.query(User).filter(func.lower(User.email) == req.email).first()
     if not user or not _verify(req.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return TokenResponse(access_token=_make_token(user.id))
@@ -103,7 +105,7 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/token", response_model=TokenResponse, include_in_schema=False)
 def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form.username).first()
+    user = db.query(User).filter(func.lower(User.email) == form.username.lower()).first()
     if not user or not _verify(form.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return TokenResponse(access_token=_make_token(user.id))

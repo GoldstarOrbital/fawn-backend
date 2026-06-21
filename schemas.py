@@ -22,6 +22,14 @@ class RegisterRequest(BaseModel):
     address: Address
     is_student: bool = True
     occupation: str = "Student"
+    school: Optional[str] = None  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        # Login does an exact match against the stored value — without this,
+        # "Jane@X.com" at signup and "jane@x.com" at login silently fail to match.
+        return v.lower()
 
     @field_validator("password")
     @classmethod
@@ -59,6 +67,11 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.lower()
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -70,6 +83,7 @@ class UserResponse(BaseModel):
     email: str
     full_name: str
     is_student: bool
+    school: Optional[str] = None
     account_active: Optional[bool] = None
     application_pending: Optional[bool] = None
 
@@ -80,6 +94,7 @@ class UserResponse(BaseModel):
             email=user.email,
             full_name=user.full_name,
             is_student=user.is_student,
+            school=getattr(user, "school", None),
             account_active=bool(user.unit_account_id),
             application_pending=bool(
                 getattr(user, "unit_application_id", None) and not user.unit_account_id

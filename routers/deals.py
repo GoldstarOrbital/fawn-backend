@@ -15,7 +15,9 @@ than auto-publishing unverified claims.
 """
 
 import hmac
+import json
 import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Security, Request, status
@@ -40,6 +42,11 @@ VALID_SCHOOLS = {
     "oregonstate",
 }
 VALID_CATEGORIES = {"gas", "food", "coffee", "housing", "bars", "bulk", "coupons"}
+
+_SCHOOLS_DATA_PATH = Path(__file__).resolve().parent.parent / "schools_data.json"
+with open(_SCHOOLS_DATA_PATH, encoding="utf-8") as f:
+    _SCHOOLS_DATA = json.load(f)
+_SCHOOLS_BY_KEY = {s["key"]: s for s in _SCHOOLS_DATA["SCHOOLS"]}
 
 
 def require_admin_key(api_key: Optional[str] = Security(API_KEY_HEADER)) -> str:
@@ -111,6 +118,36 @@ def submit_suggestion(request: Request, body: SuggestionIn, db: Session = Depend
         {"school": body.school, "category": body.category},
     )
     return {"message": "Thanks — we'll review it and add it if it checks out.", "id": entry.id}
+
+
+@router.get("/schools")
+def list_schools():
+    """All campus savings data — same dataset rendered on the marketing site's
+    Campus Savings hub, served here so the actual banking dashboard can pull
+    a single user's school without embedding 16 schools of data client-side.
+    """
+    return {
+        "schools": [
+            {"key": s["key"], "name": s["name"]} for s in _SCHOOLS_DATA["SCHOOLS"]
+        ],
+        "categoryMeta": _SCHOOLS_DATA["CAT_META"],
+    }
+
+
+@router.get("/schools/{school_key}")
+def get_school_deals(school_key: str):
+    """Full deal data for one school — what the dashboard's Campus Savings
+    card fetches based on the logged-in user's `school` field.
+    """
+    school = _SCHOOLS_BY_KEY.get(school_key)
+    if not school:
+        raise HTTPException(status_code=404, detail=f"Unknown school '{school_key}'")
+    return {
+        "key": school["key"],
+        "name": school["name"],
+        "categories": school["categories"],
+        "categoryMeta": _SCHOOLS_DATA["CAT_META"],
+    }
 
 
 @router.get("/suggestions", response_model=list[SuggestionOut])

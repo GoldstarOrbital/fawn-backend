@@ -15,6 +15,7 @@ class User(Base):
     full_name = Column(String, nullable=False)
     phone = Column(String, nullable=True)
     is_student = Column(Boolean, default=False)
+    school = Column(String, nullable=True)  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Unit identifiers — set after BaaS account creation
