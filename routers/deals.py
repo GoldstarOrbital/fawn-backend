@@ -34,7 +34,10 @@ limiter = Limiter(key_func=get_remote_address)
 
 API_KEY_HEADER = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
-VALID_SCHOOLS = {"berkeley", "stanford", "scu", "sjsu", "usf", "sfstate", "smc", "uoregon"}
+VALID_SCHOOLS = {
+    "berkeley", "stanford", "scu", "sjsu", "usf", "sfstate", "smc", "uoregon",
+    "sierra", "sacstate", "yubacollege", "calpoly", "ucdavis", "csumb", "ucsb",
+}
 VALID_CATEGORIES = {"gas", "food", "coffee", "housing", "bars", "bulk", "coupons"}
 
 
