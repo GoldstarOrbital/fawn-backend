@@ -7,6 +7,7 @@ import httpx
 
 from database import get_db
 from models import WaitlistEntry
+from services.analytics import capture, EVENTS
 
 router = APIRouter(prefix="/waitlist", tags=["waitlist"])
 
@@ -111,6 +112,7 @@ def join_waitlist(req: WaitlistJoin, db: Session = Depends(get_db)):
     db.refresh(entry)
     position = db.query(WaitlistEntry).count()
     _send_welcome_email(req.email, position)
+    capture(EVENTS["WAITLIST_JOINED"], req.email, {"position": position, "source": req.source})
     return {"message": "You're on the list!", "position": position}
 
 

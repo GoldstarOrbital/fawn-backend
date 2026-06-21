@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import FoundingMember, MagicLinkToken
 from config import settings
+from services.analytics import capture, EVENTS
 
 router = APIRouter(prefix="/member", tags=["member"])
 
@@ -119,6 +120,7 @@ def request_magic_link(body: MagicLinkRequest, db: Session = Depends(get_db)):
     db.commit()
 
     _send_magic_link(member.email, raw_token, member.member_number)
+    capture(EVENTS["MAGIC_LINK_REQUESTED"], member.email, {"member_number": member.member_number})
     return {"sent": True}
 
 
@@ -155,6 +157,7 @@ def verify_magic_link(token: str = Query(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Member not found")
 
     jwt_token = _make_jwt(member.email, member.member_number)
+    capture(EVENTS["MAGIC_LINK_CONSUMED"], member.email, {"member_number": member.member_number})
     return {"token": jwt_token, "member_number": member.member_number, "email": member.email}
 
 

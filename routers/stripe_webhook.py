@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import FoundingMember, StripeEvent
+from services.analytics import capture, EVENTS
 
 router = APIRouter(prefix="/stripe", tags=["stripe"])
 
@@ -216,6 +217,8 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
         _notify_alex(tier, amount, customer_email, member_number)
         _welcome_customer(customer_email, tier, member_number)
+        capture(EVENTS["FOUNDING_PAYMENT_SUCCEEDED"], customer_email,
+                {"tier": tier, "amount_cents": amount, "member_number": member_number})
 
         label, price = TIER_LABELS.get(tier, ("Unknown", ""))
         return {
