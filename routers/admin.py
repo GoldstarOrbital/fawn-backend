@@ -1,3 +1,4 @@
+import hmac
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -23,7 +24,7 @@ def require_admin_key(api_key: Optional[str] = Security(API_KEY_HEADER)) -> str:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="ADMIN_API_KEY environment variable is not configured.",
         )
-    if not api_key or api_key != expected:
+    if not api_key or not hmac.compare_digest(api_key, expected):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing X-Admin-Key header.",

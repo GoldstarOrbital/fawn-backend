@@ -14,6 +14,7 @@ the public-facing prices honest (community-sourced, human-verified) rather
 than auto-publishing unverified claims.
 """
 
+import hmac
 import os
 from typing import Optional
 
@@ -41,7 +42,7 @@ def require_admin_key(api_key: Optional[str] = Security(API_KEY_HEADER)) -> str:
     expected = os.environ.get("ADMIN_API_KEY", "")
     if not expected:
         raise HTTPException(status_code=500, detail="ADMIN_API_KEY not configured.")
-    if not api_key or api_key != expected:
+    if not api_key or not hmac.compare_digest(api_key, expected):
         raise HTTPException(status_code=403, detail="Invalid or missing X-Admin-Key header.")
     return api_key
 
