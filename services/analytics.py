@@ -29,6 +29,7 @@ EVENTS = {
     "REFERRAL_LINK_SHARED": "referral_link_shared",
     "MAGIC_LINK_REQUESTED": "magic_link_requested",
     "MAGIC_LINK_CONSUMED": "magic_link_consumed",
+    "DEAL_SUGGESTION_SUBMITTED": "deal_suggestion_submitted",
 }
 
 

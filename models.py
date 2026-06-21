@@ -80,6 +80,24 @@ class MagicLinkToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class DealSuggestion(Base):
+    """Community-submitted campus deal suggestions for the Campus Savings hub.
+
+    Submitted via the frontend form on index.html. Reviewed by Alex via
+    GET /deals/suggestions (admin-key protected) and manually folded into
+    the SCHOOLS data array in index.html once verified.
+    """
+    __tablename__ = "deal_suggestions"
+
+    id = Column(String, primary_key=True, default=new_id)
+    school = Column(String, nullable=False, index=True)
+    category = Column(String, nullable=False)  # gas | food | coffee | housing | bars | bulk | coupons
+    suggestion = Column(String, nullable=False)
+    submitter_email = Column(String, nullable=True)
+    status = Column(String, default="pending", nullable=False)  # pending | approved | rejected
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class EmailLog(Base):
     """Tracks which nurture emails have been sent to each waitlist address.
 
