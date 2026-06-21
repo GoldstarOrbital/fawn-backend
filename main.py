@@ -6,6 +6,7 @@ except ImportError:
     sentry_sdk = None
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -94,11 +95,15 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 ALLOWED_ORIGINS = [
+    "https://goldstarorbital.com",
+    "https://www.goldstarorbital.com",
     "https://goldstarorbital.github.io",
     "http://localhost:3000",
     "http://localhost:8080",
     "http://127.0.0.1:5500",
 ]
+
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.add_middleware(
     CORSMiddleware,
