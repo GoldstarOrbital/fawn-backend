@@ -4,9 +4,15 @@ Sandbox:    https://api.s.unit.sh
 Production: https://api.unit.co
 Switch via UNIT_BASE_URL env var on Railway.
 """
+from __future__ import annotations
+
 import re
 import httpx
+from typing import TYPE_CHECKING
 from config import settings
+
+if TYPE_CHECKING:
+    import schemas
 
 
 def _headers():
@@ -22,7 +28,7 @@ async def create_application(
     phone: str,
     ssn: str,
     date_of_birth: str,
-    address: "schemas.Address",  # type: ignore[name-defined]
+    address: "schemas.Address",
     occupation: str = "Student",
 ) -> dict:
     """

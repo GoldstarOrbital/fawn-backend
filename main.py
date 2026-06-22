@@ -68,6 +68,7 @@ def _init_db_schema():
         _patch("founding_members", "refunded", "refunded BOOLEAN DEFAULT FALSE NOT NULL")
 
         # magic_link_tokens — no extra patches needed (create_all handles new tables)
+        # password_reset_tokens — no extra patches needed (create_all handles new tables)
         # stripe_events — no extra patches needed
 
         # users columns added after initial schema

@@ -81,6 +81,22 @@ class MagicLinkToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class PasswordResetToken(Base):
+    """Short-lived, single-use tokens for the /auth/forgot-password flow.
+
+    Only the SHA-256 hash of the raw token is stored — mirrors MagicLinkToken's
+    pattern so a leaked DB row can't be replayed as a working reset link.
+    """
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    token_hash = Column(String, nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class DealSuggestion(Base):
     """Community-submitted campus deal suggestions for the Campus Savings hub.
 
@@ -95,7 +111,7 @@ class DealSuggestion(Base):
     category = Column(String, nullable=False)  # gas | food | coffee | housing | bars | bulk | coupons
     suggestion = Column(String, nullable=False)
     submitter_email = Column(String, nullable=True)
-    status = Column(String, default="pending", nullable=False)  # pending | approved | rejected
+    status = Column(String, default="pending", nullable=False, index=True)  # pending | approved | rejected
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

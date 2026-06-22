@@ -1,15 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 import os
 import httpx
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from database import get_db
 from models import WaitlistEntry
 from services.analytics import capture, EVENTS
 
 router = APIRouter(prefix="/waitlist", tags=["waitlist"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 class WaitlistJoin(BaseModel):
@@ -96,7 +99,8 @@ def _send_welcome_email(email: str, position: int) -> None:
 
 
 @router.post("/join", status_code=201)
-def join_waitlist(req: WaitlistJoin, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def join_waitlist(request: Request, req: WaitlistJoin, db: Session = Depends(get_db)):
     existing = db.query(WaitlistEntry).filter(WaitlistEntry.email == req.email).first()
     if existing:
         return {"message": "You're already on the list!", "position": _position(db, existing)}
