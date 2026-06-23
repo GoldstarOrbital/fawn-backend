@@ -2007,6 +2007,381 @@
           "tip": "&#128161; CTS bus service is already free for OSU students &#8212; don&#8217;t pay for parking if you don&#8217;t need to."
         }
       }
+    },
+    {
+      "key": "unlv",
+      "name": "UNLV",
+      "categories": {
+        "gas": {
+          "items": [
+            [
+              "Maverik, Losee Rd (North Las Vegas)",
+              "$3.79/gal"
+            ],
+            [
+              "Sam's Club, E Serene Ave (Las Vegas)",
+              "$3.79/gal"
+            ],
+            [
+              "Costco, Saint Rose Pkwy (Henderson)",
+              "$3.85/gal"
+            ]
+          ],
+          "tip": "&#128161; Verified via GasBuddy. Vegas gas is cheaper than almost anywhere else on this list &#8212; enjoy it."
+        },
+        "food": {
+          "items": [
+            [
+              "Lotus of Siam lunch special",
+              "$12.00"
+            ],
+            [
+              "In-N-Out near campus",
+              "$7.45"
+            ],
+            [
+              "Local food trucks, Maryland Pkwy",
+              "$8.00"
+            ]
+          ],
+          "tip": "&#128161; Maryland Pkwy food trucks are the best cheap lunch within walking distance of UNLV."
+        },
+        "coffee": {
+          "items": [
+            [
+              "PT&#8217;s Coffee near campus",
+              "$4.00"
+            ],
+            [
+              "Sambalatte Torrefazione",
+              "$4.50"
+            ],
+            [
+              "Dutch Bros Las Vegas",
+              "$4.25"
+            ]
+          ],
+          "tip": "&#128161; Sambalatte is the local roaster of choice for students who want something better than chain coffee."
+        },
+        "housing": {
+          "items": [
+            [
+              "Shared room near UNLV",
+              "$700&#8211;1,000/mo"
+            ],
+            [
+              "Henderson room split",
+              "$750&#8211;1,050/mo"
+            ],
+            [
+              "Studio near the Strip corridor",
+              "$1,400/mo"
+            ]
+          ],
+          "tip": "&#128161; Housing near UNLV is genuinely cheap compared to California schools on this list &#8212; Henderson is a solid value alternative."
+        },
+        "bars": {
+          "items": [
+            [
+              "Money Plays Bar &#8212; cheap drinks",
+              "$4.00"
+            ],
+            [
+              "Eclipse Theaters bar deals",
+              "$5.00"
+            ],
+            [
+              "Local dive bars, Maryland Pkwy",
+              "$3.50"
+            ]
+          ],
+          "tip": "&#128161; Vegas dive bars near campus consistently undercut anything on the Strip &#8212; stay local."
+        },
+        "bulk": {
+          "items": [
+            [
+              "Total Wine Las Vegas &#8212; 30pk",
+              "$19.99"
+            ],
+            [
+              "Sam's Club &#8212; spirits run",
+              "$17.99/1.75L"
+            ],
+            [
+              "Costco Henderson &#8212; wine",
+              "$5.99/btl"
+            ]
+          ],
+          "tip": "&#128161; Nevada liquor pricing is some of the most competitive in the country &#8212; Total Wine&#8217;s 30-pack deal is hard to beat."
+        },
+        "coupons": {
+          "items": [
+            [
+              "UNLV Rebel Bookstore &#8212; discount w/ student ID",
+              "10% off"
+            ],
+            [
+              "RTC student bus pass",
+              "Discounted fare"
+            ],
+            [
+              "Regal student Tuesday",
+              "$8 tickets"
+            ]
+          ],
+          "tip": "&#128161; RTC&#8217;s student discount makes commuting from Henderson genuinely affordable."
+        }
+      }
+    },
+    {
+      "key": "unr",
+      "name": "Nevada, Reno",
+      "categories": {
+        "gas": {
+          "items": [
+            [
+              "Pop's Mini Market, Mill St (Reno)",
+              "$4.68/gal"
+            ],
+            [
+              "Costco, Harvard Way (Reno)",
+              "$4.69/gal"
+            ],
+            [
+              "Sam's Club, Kietzke Ln (Reno)",
+              "$4.69/gal"
+            ]
+          ],
+          "tip": "&#128161; Verified via GasBuddy. Pop&#8217;s Mini Market is the cheapest verified option in Reno."
+        },
+        "food": {
+          "items": [
+            [
+              "Süp lunch special",
+              "$10.00"
+            ],
+            [
+              "Süp Thai food truck plate",
+              "$9.00"
+            ],
+            [
+              "Local food carts, Midtown Reno",
+              "$8.00"
+            ]
+          ],
+          "tip": "&#128161; Midtown Reno has the best concentration of cheap, walkable food near campus."
+        },
+        "coffee": {
+          "items": [
+            [
+              "Hub Coffee Roasters",
+              "$4.25"
+            ],
+            [
+              "Java Jungle Reno",
+              "$3.75"
+            ],
+            [
+              "Dutch Bros Reno",
+              "$4.00"
+            ]
+          ],
+          "tip": "&#128161; Hub Coffee Roasters is the local favorite for studying &#8212; consistently has open seating."
+        },
+        "housing": {
+          "items": [
+            [
+              "Shared room near UNR",
+              "$700&#8211;1,000/mo"
+            ],
+            [
+              "Sparks room split",
+              "$650&#8211;950/mo"
+            ],
+            [
+              "Studio near campus",
+              "$1,300/mo"
+            ]
+          ],
+          "tip": "&#128161; Sparks is a short drive from campus and consistently the cheapest nearby option."
+        },
+        "bars": {
+          "items": [
+            [
+              "Chapel Tavern pints",
+              "$5.00"
+            ],
+            [
+              "Java Jungle late-night happy hour",
+              "$4.50"
+            ],
+            [
+              "Local Midtown bars",
+              "$5.50"
+            ]
+          ],
+          "tip": "&#128161; Chapel Tavern&#8217;s happy hour is the standard UNR student move."
+        },
+        "bulk": {
+          "items": [
+            [
+              "Total Wine Reno &#8212; 30pk",
+              "$20.99"
+            ],
+            [
+              "Sam's Club &#8212; spirits run",
+              "$17.99/1.75L"
+            ],
+            [
+              "Costco Sparks &#8212; wine",
+              "$6.49/btl"
+            ]
+          ],
+          "tip": "&#128161; Nevada&#8217;s competitive liquor pricing applies in Reno too &#8212; Total Wine is the best bulk run."
+        },
+        "coupons": {
+          "items": [
+            [
+              "Wolf Pack Bookstore &#8212; discount w/ student ID",
+              "10% off"
+            ],
+            [
+              "RTC RIDE student bus pass",
+              "Discounted fare"
+            ],
+            [
+              "Century Theatres student rate",
+              "$9 tickets"
+            ]
+          ],
+          "tip": "&#128161; The RTC RIDE student discount is worth it if you live in Sparks and commute in."
+        }
+      }
+    },
+    {
+      "key": "ucsc",
+      "name": "UC Santa Cruz",
+      "categories": {
+        "gas": {
+          "items": [
+            [
+              "Costco, Sylvania Ave (Santa Cruz)",
+              "$5.39/gal"
+            ],
+            [
+              "Great Gas, Capitola Rd (Santa Cruz)",
+              "$5.47/gal"
+            ],
+            [
+              "Shell, Ocean St (Santa Cruz)",
+              "$5.49/gal"
+            ]
+          ],
+          "tip": "&#128161; Verified via GasBuddy. Costco is the cheapest verified option, a short drive from campus."
+        },
+        "food": {
+          "items": [
+            [
+              "Saturn Cafe plate",
+              "$11.00"
+            ],
+            [
+              "Taqueria Vallarta burrito",
+              "$9.00"
+            ],
+            [
+              "Downtown Santa Cruz food trucks",
+              "$8.00"
+            ]
+          ],
+          "tip": "&#128161; Saturn Cafe is the defining UCSC late-night spot &#8212; vegetarian-friendly and open late."
+        },
+        "coffee": {
+          "items": [
+            [
+              "Verve Coffee Roasters",
+              "$4.75"
+            ],
+            [
+              "Lulu Carpenter's",
+              "$4.25"
+            ],
+            [
+              "Coffeetopia",
+              "$4.00"
+            ]
+          ],
+          "tip": "&#128161; Coffeetopia is the best budget option for a real espresso drink downtown."
+        },
+        "housing": {
+          "items": [
+            [
+              "Shared room near UCSC",
+              "$1,200&#8211;1,600/mo"
+            ],
+            [
+              "Live Oak room split",
+              "$1,100&#8211;1,500/mo"
+            ],
+            [
+              "Studio downtown",
+              "$1,900/mo"
+            ]
+          ],
+          "tip": "&#128161; Santa Cruz housing is genuinely expensive &#8212; Live Oak tends to run cheaper than downtown or campus-adjacent."
+        },
+        "bars": {
+          "items": [
+            [
+              "The Poet and Patriot pints",
+              "$6.00"
+            ],
+            [
+              "99 Bottles &#8212; happy hour",
+              "$5.50"
+            ],
+            [
+              "Blue Lagoon downtown",
+              "$6.00"
+            ]
+          ],
+          "tip": "&#128161; 99 Bottles has one of the most reliable happy hours downtown for a huge beer selection."
+        },
+        "bulk": {
+          "items": [
+            [
+              "BevMo Santa Cruz",
+              "Buy 1 get 1 &#162;"
+            ],
+            [
+              "Total Wine Santa Cruz &#8212; 30pk",
+              "$23.99"
+            ],
+            [
+              "Costco Santa Cruz &#8212; wine",
+              "$6.99/btl"
+            ]
+          ],
+          "tip": "&#128161; BevMo&#8217;s 5&#162; sale shows up here too &#8212; same as the East Bay, worth checking before a bulk run."
+        },
+        "coupons": {
+          "items": [
+            [
+              "UCSC Bay Tree Bookstore &#8212; discount w/ student ID",
+              "10% off"
+            ],
+            [
+              "Santa Cruz METRO student bus pass",
+              "Often included in fees"
+            ],
+            [
+              "Del Mar Theatre student rate",
+              "$9 tickets"
+            ]
+          ],
+          "tip": "&#128161; The METRO student pass is frequently already covered by UCSC student fees &#8212; check before paying for parking instead."
+        }
+      }
     }
   ],
   "CAT_META": {

@@ -39,7 +39,7 @@ API_KEY_HEADER = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 VALID_SCHOOLS = {
     "berkeley", "stanford", "scu", "sjsu", "usf", "sfstate", "smc", "uoregon",
     "sierra", "sacstate", "yubacollege", "calpoly", "ucdavis", "csumb", "ucsb",
-    "oregonstate",
+    "oregonstate", "unlv", "unr", "ucsc",
 }
 VALID_CATEGORIES = {"gas", "food", "coffee", "housing", "bars", "bulk", "coupons"}
 
