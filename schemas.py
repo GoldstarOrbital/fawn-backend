@@ -91,6 +91,9 @@ class LoginRequest(BaseModel):
     def normalize_email(cls, v: str) -> str:
         return v.lower()
 
+class UpdateMeRequest(BaseModel):
+    school: Optional[str] = None
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

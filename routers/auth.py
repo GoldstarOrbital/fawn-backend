@@ -22,6 +22,7 @@ from schemas import (
     UserResponse,
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    UpdateMeRequest,
 )
 from config import settings
 from dependencies import get_current_user
@@ -166,6 +167,19 @@ def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 
 @router.get("/me", response_model=UserResponse)
 def me(current_user: User = Depends(get_current_user)):
+    return UserResponse.from_orm_user(current_user)
+
+
+@router.patch("/me", response_model=UserResponse)
+def update_me(
+    req: UpdateMeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if req.school is not None:
+        current_user.school = req.school
+    db.commit()
+    db.refresh(current_user)
     return UserResponse.from_orm_user(current_user)
 
 
