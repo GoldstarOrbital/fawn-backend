@@ -10,7 +10,7 @@ from sqlalchemy import func, cast, Date
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import FoundingMember, WaitlistEntry
+from models import FoundingMember, WaitlistEntry, User, DealSuggestion
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -289,3 +289,72 @@ def get_members(
     )
 
     return MembersOut(members=members, summary=summary)
+
+
+@router.get("/stats/overview")
+def get_stats_overview(
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+) -> Dict:
+    waitlist_count: int = db.query(func.count(WaitlistEntry.id)).scalar() or 0
+
+    founding_members_count: int = db.query(func.count(FoundingMember.id)).scalar() or 0
+
+    # Revenue: amount_cents on FoundingMember is the price paid per tier via
+    # Stripe checkout (see model docstring) — sum across all members is the
+    # genuine total revenue collected.
+    tier_rows = (
+        db.query(
+            FoundingMember.tier,
+            func.count(FoundingMember.id).label("cnt"),
+            func.sum(FoundingMember.amount_cents).label("rev"),
+        )
+        .group_by(FoundingMember.tier)
+        .all()
+    )
+    founding_members_by_tier: Dict[str, int] = {
+        "founding": 0,
+        "inner_circle": 0,
+        "dev_sprint": 0,
+    }
+    total_revenue_cents = 0
+    for row in tier_rows:
+        if row.tier in founding_members_by_tier:
+            founding_members_by_tier[row.tier] = row.cnt or 0
+        total_revenue_cents += row.rev or 0
+
+    registered_users_count: int = db.query(func.count(User.id)).scalar() or 0
+
+    # "Active account" = Unit deposit account created (unit_account_id set).
+    users_with_active_account_count: int = (
+        db.query(func.count(User.id))
+        .filter(User.unit_account_id.isnot(None))
+        .scalar()
+        or 0
+    )
+
+    school_rows = (
+        db.query(User.school, func.count(User.id).label("cnt"))
+        .filter(User.school.isnot(None))
+        .group_by(User.school)
+        .all()
+    )
+    users_by_school: Dict[str, int] = {row.school: row.cnt for row in school_rows}
+
+    deal_suggestions_pending_count: int = (
+        db.query(func.count(DealSuggestion.id))
+        .filter(DealSuggestion.status == "pending")
+        .scalar()
+        or 0
+    )
+
+    return {
+        "waitlist_count": waitlist_count,
+        "founding_members_count": founding_members_count,
+        "founding_members_by_tier": founding_members_by_tier,
+        "total_revenue_cents": total_revenue_cents,
+        "registered_users_count": registered_users_count,
+        "users_with_active_account_count": users_with_active_account_count,
+        "users_by_school": users_by_school,
+        "deal_suggestions_pending_count": deal_suggestions_pending_count,
+    }
