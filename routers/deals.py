@@ -40,6 +40,8 @@ VALID_SCHOOLS = {
     "berkeley", "stanford", "scu", "sjsu", "usf", "sfstate", "smc", "uoregon",
     "sierra", "sacstate", "yubacollege", "calpoly", "ucdavis", "csumb", "ucsb",
     "oregonstate", "unlv", "unr", "ucsc",
+    "ucla", "ucsd", "sdsu", "uci", "ucr", "ucmerced", "csulb", "csuf",
+    "fresnostate", "chicostate", "humboldt", "uw", "seattleu", "wsu", "wwu", "psu",
 }
 VALID_CATEGORIES = {"gas", "food", "coffee", "housing", "bars", "bulk", "coupons"}
 
