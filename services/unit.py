@@ -80,6 +80,29 @@ async def create_application(
         return resp.json()["data"]
 
 
+async def approve_application_sandbox(unit_application_id: str) -> dict:
+    """Sandbox-only simulation: force-approve an application stuck in
+    PendingReview/AwaitingDocuments. Unit's real production review process
+    has no equivalent — this only exists on api.s.unit.sh for developer
+    testing. Caller is responsible for checking settings.unit_base_url
+    before calling this.
+    """
+    payload = {
+        "data": {
+            "type": "applicationApprove",
+            "attributes": {"reason": "sandbox"},
+        }
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings.unit_base_url}/sandbox/applications/{unit_application_id}/approve",
+            json=payload,
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]
+
+
 async def get_application(unit_application_id: str) -> dict:
     """Poll the status of a pending application."""
     async with httpx.AsyncClient(timeout=15) as client:

@@ -5,6 +5,7 @@ from models import User
 from schemas import AccountBalance
 from dependencies import get_current_user
 from services import unit as unit_svc
+from config import settings
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -109,3 +110,51 @@ async def refresh_application_status(
         "application_pending": application_pending,
         "unit_account_id": current_user.unit_account_id,
     }
+
+
+@router.post("/activate-sandbox")
+async def activate_sandbox(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Sandbox-only: force-approve a stuck PendingReview/AwaitingDocuments
+    application via Unit's sandbox simulation endpoint, then finish account
+    setup. Self-service — no admin key needed, just the user's own login.
+
+    Refuses to run against anything but Unit's sandbox base URL. There is
+    no equivalent in production: real manual KYC review has to actually
+    happen. Lets developers/testers get a working dashboard immediately
+    instead of waiting on (or fighting) a sandbox-simulated pending review.
+    """
+    if "s.unit.sh" not in settings.unit_base_url:
+        raise HTTPException(
+            status_code=403,
+            detail="Sandbox-only endpoint — refusing to run against a non-sandbox Unit environment.",
+        )
+
+    if current_user.unit_account_id:
+        return {"account_active": True, "application_pending": False, "unit_account_id": current_user.unit_account_id}
+
+    if not current_user.unit_application_id:
+        raise HTTPException(status_code=400, detail="No application on file — register first.")
+
+    try:
+        await unit_svc.approve_application_sandbox(current_user.unit_application_id)
+        application = await unit_svc.get_application(current_user.unit_application_id)
+        relationships = application.get("relationships", {})
+        customer_data = relationships.get("customer", {}).get("data", {})
+        unit_customer_id = customer_data.get("id")
+        if not unit_customer_id:
+            raise HTTPException(status_code=502, detail="Unit approved the application but returned no customer id.")
+
+        current_user.unit_customer_id = unit_customer_id
+        account = await unit_svc.create_deposit_account(unit_customer_id)
+        current_user.unit_account_id = account["id"]
+        db.commit()
+        db.refresh(current_user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Sandbox activation failed: {e}")
+
+    return {"account_active": True, "application_pending": False, "unit_account_id": current_user.unit_account_id}
