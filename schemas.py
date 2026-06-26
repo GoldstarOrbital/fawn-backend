@@ -144,6 +144,131 @@ class TransactionItem(BaseModel):
 class TransactionList(BaseModel):
     transactions: List[TransactionItem]
 
+# --- P2P payments ---
+
+_HANDLE_RE = re.compile(r"^[a-z0-9_]{3,20}$")
+
+class HandleClaimRequest(BaseModel):
+    handle: str
+
+    @field_validator("handle")
+    @classmethod
+    def normalize_handle(cls, v: str) -> str:
+        v = v.strip().lstrip("@").lower()
+        if not _HANDLE_RE.match(v):
+            raise ValueError("Handle must be 3-20 characters: lowercase letters, numbers, underscore only.")
+        return v
+
+class HandleOut(BaseModel):
+    handle: str
+
+class HandleLookupOut(BaseModel):
+    handle: str
+    claimable: bool
+    display_name: Optional[str] = None  # first name + last initial only, never full identity
+
+class P2PSendRequest(BaseModel):
+    to_handle: str
+    amount_cents: int
+    note: Optional[str] = None
+    idempotency_key: str
+
+    @field_validator("to_handle")
+    @classmethod
+    def normalize_to_handle(cls, v: str) -> str:
+        return v.strip().lstrip("@").lower()
+
+    @field_validator("amount_cents")
+    @classmethod
+    def amount_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("amount_cents must be positive")
+        if v > 100_000_00:  # $100,000 hard ceiling regardless of tier — sanity bound, not the real limit
+            raise ValueError("amount_cents exceeds the maximum allowed transfer size")
+        return v
+
+class P2PRequestRequest(BaseModel):
+    from_handle: str  # the person being asked to pay
+    amount_cents: int
+    note: Optional[str] = None
+    idempotency_key: str
+
+    @field_validator("from_handle")
+    @classmethod
+    def normalize_from_handle(cls, v: str) -> str:
+        return v.strip().lstrip("@").lower()
+
+    @field_validator("amount_cents")
+    @classmethod
+    def amount_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("amount_cents must be positive")
+        return v
+
+class P2PSplitRequest(BaseModel):
+    total_amount_cents: int
+    recipient_handles: List[str]
+    note: Optional[str] = None
+    idempotency_key: str  # one key for the whole split; per-row keys are derived from it
+
+    @field_validator("recipient_handles")
+    @classmethod
+    def normalize_handles(cls, v: List[str]) -> List[str]:
+        cleaned = [h.strip().lstrip("@").lower() for h in v]
+        if len(cleaned) < 1:
+            raise ValueError("At least one recipient handle is required")
+        if len(cleaned) > 20:
+            raise ValueError("Splits are capped at 20 people")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("Duplicate recipient handles in split")
+        return cleaned
+
+    @field_validator("total_amount_cents")
+    @classmethod
+    def amount_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("total_amount_cents must be positive")
+        return v
+
+class P2PConfirmRequest(BaseModel):
+    step_up_acknowledged: bool = False
+
+class P2PTransferOut(BaseModel):
+    id: str
+    type: str
+    status: str
+    direction: str  # "sent" | "received" | "request_outgoing" | "request_incoming" (relative to current user)
+    counterparty_handle: str
+    amount_cents: int
+    note: Optional[str] = None
+    warning: Optional[str] = None
+    group_id: Optional[str] = None
+    step_up_required: bool = False
+    created_at: str
+    completed_at: Optional[str] = None
+    error_message: Optional[str] = None
+
+class P2PTransferList(BaseModel):
+    transfers: List[P2PTransferOut]
+
+class P2PDisputeRequest(BaseModel):
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def reason_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 10:
+            raise ValueError("Please describe the issue in at least 10 characters.")
+        return v[:1000]
+
+class P2PDisputeOut(BaseModel):
+    id: str
+    transfer_id: str
+    status: str
+    reason: str
+    created_at: str
+
 # --- News / AI ---
 
 class NewsRequest(BaseModel):

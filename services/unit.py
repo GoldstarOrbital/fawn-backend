@@ -15,11 +15,16 @@ if TYPE_CHECKING:
     import schemas
 
 
-def _headers():
-    return {
+def _headers(idempotency_key: str | None = None):
+    headers = {
         "Authorization": f"Bearer {settings.unit_api_token}",
         "Content-Type": "application/vnd.api+json",
     }
+    if idempotency_key:
+        # Unit dedupes on this header — a retried request with the same key
+        # returns the original payment instead of creating a second one.
+        headers["Idempotency-Key"] = idempotency_key
+    return headers
 
 
 async def create_application(
@@ -179,3 +184,40 @@ async def list_transactions(unit_account_id: str, limit: int = 20) -> list:
             "status": a.get("status", ""),
         })
     return transactions
+
+
+async def create_book_payment(
+    sender_account_id: str,
+    recipient_account_id: str,
+    amount_cents: int,
+    description: str,
+    idempotency_key: str,
+) -> dict:
+    """Move money between two deposit accounts at the same sponsor bank.
+
+    Unit Book Payments settle instantly (sub-second) since no external
+    network is involved — both accounts live under the same Unit org.
+    This is the only Unit call Tier 1 P2P sends make. The Idempotency-Key
+    header means a network-retry of this exact call can never double-send.
+    """
+    payload = {
+        "data": {
+            "type": "bookPayment",
+            "attributes": {
+                "amount": amount_cents,
+                "description": description[:80],  # Unit truncates descriptions; keep it predictable
+            },
+            "relationships": {
+                "account": {"data": {"type": "depositAccount", "id": sender_account_id}},
+                "counterpartyAccount": {"data": {"type": "depositAccount", "id": recipient_account_id}},
+            },
+        }
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings.unit_base_url}/payments",
+            json=payload,
+            headers=_headers(idempotency_key=idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]
