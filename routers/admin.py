@@ -358,3 +358,26 @@ def get_stats_overview(
         "users_by_school": users_by_school,
         "deal_suggestions_pending_count": deal_suggestions_pending_count,
     }
+
+
+@router.get("/users/lookup")
+def lookup_user_status(
+    email: str = Query(..., description="Account email to look up"),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+) -> Dict:
+    """Debug helper: see exactly where a user's KYC/account setup stands,
+    without needing direct DB access. No password/SSN/secrets exposed."""
+    user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="No user with that email.")
+
+    return {
+        "email": user.email,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "unit_customer_id": user.unit_customer_id,
+        "unit_account_id": user.unit_account_id,
+        "unit_application_id": user.unit_application_id,
+        "account_active": bool(user.unit_account_id),
+        "application_pending": bool(user.unit_application_id and not user.unit_account_id),
+    }
