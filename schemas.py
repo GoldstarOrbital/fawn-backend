@@ -131,6 +131,21 @@ class AccountBalance(BaseModel):
     current: float
     currency: str = "USD"
 
+# --- Cards ---
+
+class CardOut(BaseModel):
+    id: str
+    last4_digits: str
+    expiration_date: str
+    status: str
+    created_at: str
+
+class CardList(BaseModel):
+    cards: List[CardOut]
+
+class CardFreezeRequest(BaseModel):
+    reason: Optional[str] = "userRequested"
+
 # --- Transactions ---
 
 class TransactionItem(BaseModel):

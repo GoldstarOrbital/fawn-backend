@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -153,6 +153,8 @@ app.include_router(stripe_webhook.router)
 app.include_router(member.router)
 app.include_router(deals.router)
 app.include_router(p2p.router)
+app.include_router(cards.router)
+app.include_router(unit_webhook.router)
 
 
 @app.get("/health")

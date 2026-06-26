@@ -244,3 +244,86 @@ async def create_book_payment(
         )
         resp.raise_for_status()
         return resp.json()["data"]
+
+
+async def create_virtual_card(unit_account_id: str, idempotency_key: str) -> dict:
+    """Issue an individual virtual debit card on a deposit account.
+
+    Deliberately the only card-creation path we expose — no full PAN/CVV
+    retrieval anywhere in this service. Unit's "sensitive" card-details
+    endpoint (full number, CVV) requires PCI-scoped handling we haven't
+    built and don't need for an MVP; cardholders only ever see last4/status.
+    """
+    payload = {
+        "data": {
+            "type": "individualVirtualDebitCard",
+            "attributes": {"idempotencyKey": idempotency_key},
+            "relationships": {
+                "account": {"data": {"type": "depositAccount", "id": unit_account_id}},
+            },
+        }
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings.unit_base_url}/cards",
+            json=payload,
+            headers=_headers(idempotency_key=idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]
+
+
+def _card_summary(card: dict) -> dict:
+    attrs = card.get("attributes", {})
+    return {
+        "id": card["id"],
+        "last4Digits": attrs.get("last4Digits", ""),
+        "expirationDate": attrs.get("expirationDate", ""),
+        "status": attrs.get("status", ""),
+        "createdAt": attrs.get("createdAt", ""),
+    }
+
+
+async def list_cards(unit_account_id: str) -> list:
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.unit_base_url}/cards",
+            params={"filter[accountId]": unit_account_id},
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return [_card_summary(c) for c in resp.json().get("data", [])]
+
+
+async def get_card(unit_card_id: str) -> dict:
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.unit_base_url}/cards/{unit_card_id}",
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return _card_summary(resp.json()["data"])
+
+
+async def freeze_card(unit_card_id: str, reason: str = "userRequested") -> dict:
+    payload = {"data": {"type": "freezeCard", "attributes": {"reason": reason}}}
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{settings.unit_base_url}/cards/{unit_card_id}/freeze",
+            json=payload,
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return _card_summary(resp.json()["data"])
+
+
+async def unfreeze_card(unit_card_id: str) -> dict:
+    payload = {"data": {"type": "unfreezeCard"}}
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{settings.unit_base_url}/cards/{unit_card_id}/unfreeze",
+            json=payload,
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        return _card_summary(resp.json()["data"])

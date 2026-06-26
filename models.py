@@ -115,6 +115,31 @@ class DealSuggestion(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class Card(Base):
+    """Ownership record for a Unit virtual debit card.
+
+    Unit is the source of truth for card state (status, last4, etc.) —
+    this table only exists so we can cheaply verify "does this card
+    belong to this user" without an extra Unit API call on every request.
+    """
+    __tablename__ = "cards"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    unit_card_id = Column(String, nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UnitEvent(Base):
+    """Idempotency record — every processed Unit webhook event id is stored
+    here, mirroring StripeEvent's pattern."""
+    __tablename__ = "unit_events"
+
+    id = Column(String, primary_key=True)  # Unit event id
+    type = Column(String, nullable=False)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class Handle(Base):
     """A unique @handle a user claims to send/receive P2P payments.
 
