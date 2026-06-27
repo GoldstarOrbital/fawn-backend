@@ -27,6 +27,7 @@ from email_templates import (
     build_email_5,
 )
 from routers.admin import require_admin_key
+from routers.waitlist import _send_welcome_email, WELCOME_EMAIL_NUMBER
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -159,5 +160,64 @@ def process_nurture(
         "status": "ok",
         "sent": sent_count,
         "already_sent_skipped": skipped_count,
+        "total_entries": len(entries),
+    }
+
+
+@router.post("/resend-welcome-backfill")
+def resend_welcome_backfill(
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """One-time backfill: send the waitlist welcome/confirmation email to
+    every existing entry that never got one, then mark it sent.
+
+    Needed because the welcome email was silently failing for anyone who
+    wasn't the Resend account owner — it was being sent from Resend's
+    shared sandbox sender, which can't deliver to real third parties (now
+    fixed). Real signups before that fix landed never got a confirmation.
+    Idempotent via EmailLog(email_number=1) — safe to call more than once;
+    already-confirmed entries are always skipped.
+    """
+    entries = db.query(WaitlistEntry).order_by(WaitlistEntry.created_at.asc()).all()
+
+    sent_count = 0
+    skipped_count = 0
+    failed_count = 0
+
+    for i, entry in enumerate(entries, start=1):
+        already = (
+            db.query(EmailLog)
+            .filter(EmailLog.email == entry.email, EmailLog.email_number == WELCOME_EMAIL_NUMBER)
+            .first()
+        )
+        if already:
+            skipped_count += 1
+            continue
+
+        if _send_welcome_email(entry.email, i):
+            db.add(EmailLog(email=entry.email, email_number=WELCOME_EMAIL_NUMBER))
+            sent_count += 1
+        else:
+            failed_count += 1
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        return {
+            "status": "partial",
+            "sent": sent_count,
+            "already_sent_skipped": skipped_count,
+            "failed": failed_count,
+            "total_entries": len(entries),
+            "commit_error": str(e),
+        }
+
+    return {
+        "status": "ok",
+        "sent": sent_count,
+        "already_sent_skipped": skipped_count,
+        "failed": failed_count,
         "total_entries": len(entries),
     }

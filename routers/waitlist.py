@@ -8,9 +8,12 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from database import get_db
-from models import WaitlistEntry
+from models import WaitlistEntry, EmailLog
 from config import settings
 from services.analytics import capture, EVENTS
+
+WELCOME_EMAIL_NUMBER = 1  # EmailLog marker — distinguishes the immediate
+                          # welcome email from the day-3+ nurture sequence (#2-#5)
 
 router = APIRouter(prefix="/waitlist", tags=["waitlist"])
 limiter = Limiter(key_func=get_remote_address)
@@ -23,11 +26,11 @@ class WaitlistJoin(BaseModel):
     referral_code: Optional[str] = None  # ?ref= param from landing page
 
 
-def _send_welcome_email(email: str, position: int) -> None:
+def _send_welcome_email(email: str, position: int) -> bool:
     api_key = os.environ.get("RESEND_API_KEY", "")
     if not api_key:
         print(f"[waitlist] RESEND_API_KEY not set — could not send welcome email to {email}")
-        return
+        return False
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -97,10 +100,13 @@ def _send_welcome_email(email: str, position: int) -> None:
         )
         if resp.status_code not in (200, 201):
             print(f"[waitlist] welcome email to {email} failed: {resp.status_code} {resp.text[:300]}")
+            return False
+        return True
     except Exception as e:
         # Never crash the signup flow over an email failure — but always log it,
         # otherwise a broken sender is invisible until a real person reports it.
         print(f"[waitlist] welcome email to {email} raised: {e}")
+        return False
 
 
 @router.post("/join", status_code=201)
@@ -120,7 +126,9 @@ def join_waitlist(request: Request, req: WaitlistJoin, db: Session = Depends(get
     db.commit()
     db.refresh(entry)
     position = db.query(WaitlistEntry).count()
-    _send_welcome_email(req.email, position)
+    if _send_welcome_email(req.email, position):
+        db.add(EmailLog(email=req.email, email_number=WELCOME_EMAIL_NUMBER))
+        db.commit()
     capture(EVENTS["WAITLIST_JOINED"], req.email, {"position": position, "source": req.source})
     return {"message": "You're on the list!", "position": position}
 
