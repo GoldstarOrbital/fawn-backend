@@ -74,7 +74,8 @@ async def list_my_cards(current_user: User = Depends(get_current_user), db: Sess
         try:
             summary = await unit_svc.get_card(c.unit_card_id)
             cards.append(_to_out(summary))
-        except Exception:
+        except Exception as e:
+            print(f"[cards] failed to fetch card {c.unit_card_id} for user {current_user.id}: {e}")
             continue  # Unit hiccup on one card shouldn't 500 the whole list
     return CardList(cards=cards)
 

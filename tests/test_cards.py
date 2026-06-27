@@ -93,6 +93,29 @@ def test_list_then_freeze_then_unfreeze(client, monkeypatch):
     assert unfrozen.json()["status"] == "Active"
 
 
+def test_list_skips_card_on_unit_error_and_logs(client, monkeypatch, capsys):
+    card_id = f"card_{uuid.uuid4().hex[:8]}"
+    _mock_unit_card_calls(monkeypatch, card_id=card_id)
+    user_id = _create_active_user(f"flaky_{uuid.uuid4().hex[:8]}@example.com")
+    token = _token_for(user_id)
+
+    create = client.post("/cards", headers=_auth(token))
+    assert create.status_code == 201
+
+    async def fake_get_failing(unit_card_id):
+        raise RuntimeError("Unit API timeout")
+
+    monkeypatch.setattr("routers.cards.unit_svc.get_card", fake_get_failing)
+
+    listed = client.get("/cards", headers=_auth(token))
+    assert listed.status_code == 200
+    assert listed.json()["cards"] == []
+
+    captured = capsys.readouterr()
+    assert card_id in captured.out
+    assert "Unit API timeout" in captured.out
+
+
 def test_freeze_someone_elses_card_404(client, monkeypatch):
     card_id = f"card_{uuid.uuid4().hex[:8]}"
     _mock_unit_card_calls(monkeypatch, card_id=card_id)
