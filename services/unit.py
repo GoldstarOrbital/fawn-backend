@@ -327,3 +327,55 @@ async def unfreeze_card(unit_card_id: str) -> dict:
         )
         resp.raise_for_status()
         return _card_summary(resp.json()["data"])
+
+
+async def create_ach_funding_payment(
+    unit_account_id: str,
+    routing_number: str,
+    account_number: str,
+    account_type: str,
+    account_holder_name: str,
+    amount_cents: int,
+    idempotency_key: str,
+) -> dict:
+    """Pull money from an external bank account into a FAWN deposit
+    account via ACH — "Add funds."
+
+    Uses Unit's inline-counterparty ACH payment (no Plaid Link integration
+    yet — that's the natural next step once there's a reason to add a
+    second vendor dependency). direction="Credit" means the FAWN deposit
+    account is credited; the external account is debited. ACH settles in
+    days, not instantly, and can be returned by the sending bank — unlike
+    a Book Payment this is never treated as instant or final.
+
+    routing_number/account_number are sent directly to Unit and never
+    persisted on our side — callers must not store them, only the last 4
+    digits for the user's own reference (mirrors how SSN is handled).
+    """
+    payload = {
+        "data": {
+            "type": "achPayment",
+            "attributes": {
+                "amount": amount_cents,
+                "direction": "Credit",
+                "description": "FAWN Add Funds",
+                "counterparty": {
+                    "routingNumber": routing_number,
+                    "accountNumber": account_number,
+                    "accountType": account_type,
+                    "name": account_holder_name,
+                },
+            },
+            "relationships": {
+                "account": {"data": {"type": "depositAccount", "id": unit_account_id}},
+            },
+        }
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings.unit_base_url}/payments",
+            json=payload,
+            headers=_headers(idempotency_key=idempotency_key),
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]

@@ -130,6 +130,31 @@ class Card(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class FundingRequest(Base):
+    """A request to pull money from an external bank account into a FAWN
+    deposit account via ACH (Unit's inline-counterparty ACH debit/Credit
+    direction — see services/unit.py).
+
+    The full external account/routing number is NEVER stored here — only
+    the last 4 digits, for the user's own reference. The full numbers are
+    sent directly to Unit and discarded immediately after the API call,
+    mirroring how SSN is handled in the registration flow.
+    """
+    __tablename__ = "funding_requests"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="pending", index=True)  # pending | completed | failed
+    external_account_last4 = Column(String, nullable=False)
+    external_bank_name = Column(String, nullable=True)
+    unit_payment_id = Column(String, nullable=True)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class UnitEvent(Base):
     """Idempotency record — every processed Unit webhook event id is stored
     here, mirroring StripeEvent's pattern."""

@@ -146,6 +146,58 @@ class CardList(BaseModel):
 class CardFreezeRequest(BaseModel):
     reason: Optional[str] = "userRequested"
 
+# --- Funding (Add Funds via ACH) ---
+
+class AddFundsRequest(BaseModel):
+    amount_cents: int
+    routing_number: str
+    account_number: str
+    account_type: str  # "Checking" | "Savings"
+    account_holder_name: str
+    idempotency_key: str
+
+    @field_validator("amount_cents")
+    @classmethod
+    def amount_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("amount_cents must be positive")
+        return v
+
+    @field_validator("routing_number")
+    @classmethod
+    def routing_number_format(cls, v: str) -> str:
+        digits = re.sub(r"\D", "", v)
+        if len(digits) != 9:
+            raise ValueError("Routing number must be 9 digits")
+        return digits
+
+    @field_validator("account_number")
+    @classmethod
+    def account_number_format(cls, v: str) -> str:
+        digits = re.sub(r"\D", "", v)
+        if not (4 <= len(digits) <= 17):
+            raise ValueError("Account number must be 4-17 digits")
+        return digits
+
+    @field_validator("account_type")
+    @classmethod
+    def account_type_valid(cls, v: str) -> str:
+        if v not in ("Checking", "Savings"):
+            raise ValueError("account_type must be 'Checking' or 'Savings'")
+        return v
+
+class FundingRequestOut(BaseModel):
+    id: str
+    amount_cents: int
+    status: str
+    external_account_last4: str
+    created_at: str
+    completed_at: Optional[str] = None
+    error_message: Optional[str] = None
+
+class FundingRequestList(BaseModel):
+    requests: List[FundingRequestOut]
+
 # --- Transactions ---
 
 class TransactionItem(BaseModel):
