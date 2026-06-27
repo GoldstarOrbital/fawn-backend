@@ -90,6 +90,14 @@ def build_email_3(name: str) -> tuple[str, str]:
     Your deposits are FDIC-insured through our banking partner, Unit.
   </p>
   <p>That's the deal.</p>
+  <p>
+    If that resonates and you want in before everyone else, we run a small
+    <strong>Founding Member</strong> program — a one-time payment that locks in
+    free FAWN Premium for life and early access when we launch.
+    <a href="https://goldstarorbital.github.io/fawn-landing/founding.html" style="color:#0066cc;">
+      Details here →
+    </a>
+  </p>
   {_SIGNATURE}
 </body></html>"""
     return subject, html
@@ -102,13 +110,14 @@ def build_email_4(name: str) -> tuple[str, str]:
     html = f"""<html><body style="{_BASE_STYLE}">
   <p>Hey {name},</p>
   <p>
-    Quick update: we're getting close to opening up beta access, and the waitlist
-    has grown a lot faster than we expected. Hundreds of students have signed up in
-    the last few weeks alone.
+    Quick update on where things stand: the waitlist keeps growing, and your spot
+    on it isn't fixed — every person you refer moves you up.
   </p>
   <p>
-    Here's the thing — your spot on the list isn't fixed. Every person you refer
-    moves you up. The more people you bring in, the sooner you get access.
+    The more people you bring in, the sooner you get access. And if you'd rather
+    not wait at all, the
+    <a href="https://goldstarorbital.github.io/fawn-landing/founding.html" style="color:#0066cc;">Founding Member program</a>
+    is open right now — a one-time payment for early access plus free Premium for life.
   </p>
   <p>
     Your personal referral link:<br>
@@ -154,7 +163,9 @@ def build_email_5(name: str) -> tuple[str, str]:
   <p>
     We'll send final access instructions to beta members first.
     If you haven't already, sharing your referral link is still the best way to
-    guarantee you're in the first wave.
+    move up the list — or, if you don't want to wait at all, you can claim a
+    <a href="https://goldstarorbital.github.io/fawn-landing/founding.html" style="color:#0066cc;">Founding Member spot</a>
+    right now and skip straight to the front.
   </p>
   <p>
     Almost there. Stay tuned.
