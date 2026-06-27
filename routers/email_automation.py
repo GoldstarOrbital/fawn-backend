@@ -42,9 +42,10 @@ NURTURE_SCHEDULE = [
 ]
 
 
-def _send_email(subject: str, html: str, to: str) -> bool:
+def _send_email(subject: str, html: str, to: str, email_number: int | None = None) -> bool:
     """Send a single email via Resend. Returns True on success."""
     if not settings.resend_api_key:
+        print(f"[email_automation] email_number={email_number} to {to} skipped: no resend_api_key configured")
         return False
     try:
         r = httpx.post(
@@ -61,8 +62,12 @@ def _send_email(subject: str, html: str, to: str) -> bool:
             },
             timeout=10,
         )
-        return r.status_code in (200, 201)
-    except Exception:
+        if r.status_code not in (200, 201):
+            print(f"[email_automation] email_number={email_number} to {to} failed: {r.status_code} {r.text[:300]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[email_automation] email_number={email_number} to {to} raised: {e}")
         return False
 
 
@@ -138,7 +143,7 @@ def process_nurture(
             else:
                 recipient = email_addr
 
-            success = _send_email(subject, html, recipient)
+            success = _send_email(subject, html, recipient, email_number=step["email_number"])
             if success:
                 _log_sent(db, email_addr, step["email_number"])
                 sent_count += 1
