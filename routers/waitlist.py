@@ -9,6 +9,7 @@ from slowapi.util import get_remote_address
 
 from database import get_db
 from models import WaitlistEntry
+from config import settings
 from services.analytics import capture, EVENTS
 
 router = APIRouter(prefix="/waitlist", tags=["waitlist"])
@@ -25,6 +26,7 @@ class WaitlistJoin(BaseModel):
 def _send_welcome_email(email: str, position: int) -> None:
     api_key = os.environ.get("RESEND_API_KEY", "")
     if not api_key:
+        print(f"[waitlist] RESEND_API_KEY not set — could not send welcome email to {email}")
         return
 
     html = f"""<!DOCTYPE html>
@@ -79,23 +81,26 @@ def _send_welcome_email(email: str, position: int) -> None:
 </html>"""
 
     try:
-        httpx.post(
+        resp = httpx.post(
             "https://api.resend.com/emails",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             json={
-                "from": "FAWN <onboarding@resend.dev>",
+                "from": f"FAWN <{settings.from_email}>",
                 "to": [email],
                 "subject": "You're on the FAWN waitlist",
                 "html": html,
             },
             timeout=10.0,
         )
-    except Exception:
-        # Never crash the signup flow over an email failure
-        pass
+        if resp.status_code not in (200, 201):
+            print(f"[waitlist] welcome email to {email} failed: {resp.status_code} {resp.text[:300]}")
+    except Exception as e:
+        # Never crash the signup flow over an email failure — but always log it,
+        # otherwise a broken sender is invisible until a real person reports it.
+        print(f"[waitlist] welcome email to {email} raised: {e}")
 
 
 @router.post("/join", status_code=201)

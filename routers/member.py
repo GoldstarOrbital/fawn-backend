@@ -32,7 +32,7 @@ from services.analytics import capture, EVENTS
 router = APIRouter(prefix="/member", tags=["member"])
 limiter = Limiter(key_func=get_remote_address)
 
-FAWN_FROM = "FAWN <onboarding@resend.dev>"
+FAWN_FROM = f"FAWN <{settings.from_email}>"
 DASHBOARD_BASE = "https://goldstarorbital.github.io/fawn-landing/member.html"
 LINK_EXPIRY_MINUTES = 15
 JWT_EXPIRY_HOURS = 72
@@ -87,8 +87,12 @@ def _send_magic_link(email: str, raw_token: str, member_number: int):
             json={"from": FAWN_FROM, "to": [email], "subject": "Your FAWN dashboard link", "html": html},
             timeout=8,
         )
-        return r.status_code in (200, 201)
-    except Exception:
+        if r.status_code not in (200, 201):
+            print(f"[member] magic link email to {email} failed: {r.status_code} {r.text[:300]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[member] magic link email to {email} raised: {e}")
         return False
 
 

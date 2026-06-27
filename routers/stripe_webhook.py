@@ -25,12 +25,13 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import FoundingMember, StripeEvent
+from config import settings
 from services.analytics import capture, EVENTS
 
 router = APIRouter(prefix="/stripe", tags=["stripe"])
 
 ALEX_EMAIL = "alexmarcusgoldsmith@gmail.com"
-FAWN_FROM = "FAWN <onboarding@resend.dev>"
+FAWN_FROM = f"FAWN <{settings.from_email}>"
 
 AMOUNT_TO_TIER = {
     4900: "founding",
@@ -67,6 +68,7 @@ def _verify_stripe_signature(payload: bytes, sig_header: str, secret: str) -> bo
 def _resend(to: str, subject: str, html: str) -> bool:
     api_key = os.environ.get("RESEND_API_KEY", "")
     if not api_key:
+        print(f"[stripe_webhook] RESEND_API_KEY not set — could not send '{subject}' to {to}")
         return False
     try:
         r = httpx.post(
@@ -75,8 +77,12 @@ def _resend(to: str, subject: str, html: str) -> bool:
             json={"from": FAWN_FROM, "to": [to], "subject": subject, "html": html},
             timeout=8,
         )
-        return r.status_code in (200, 201)
-    except Exception:
+        if r.status_code not in (200, 201):
+            print(f"[stripe_webhook] email '{subject}' to {to} failed: {r.status_code} {r.text[:300]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[stripe_webhook] email '{subject}' to {to} raised: {e}")
         return False
 
 
