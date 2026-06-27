@@ -240,6 +240,14 @@ class P2PDispute(Base):
 
     id = Column(String, primary_key=True, default=new_id)
     transfer_id = Column(String, nullable=False, index=True)
+    # Canonical id of the underlying money movement this dispute covers.
+    # A "request" row and the linked "send" row that fulfills it represent
+    # the SAME real Unit Book Payment (see pay_request/confirm_transfer in
+    # routers/p2p.py) — payment_id always resolves to the "send" row's id
+    # so that disputing either row is recognized as disputing one payment.
+    # Nullable for backward compatibility with rows created before this
+    # column existed.
+    payment_id = Column(String, nullable=True, index=True)
     filer_user_id = Column(String, nullable=False, index=True)
     reason = Column(String, nullable=False)
     status = Column(String, default="open", nullable=False, index=True)  # open | refunded | denied

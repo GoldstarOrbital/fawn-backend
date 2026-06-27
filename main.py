@@ -79,6 +79,9 @@ def _init_db_schema():
         _patch("users", "is_student", "is_student BOOLEAN DEFAULT FALSE")
         _patch("users", "unit_application_id", "unit_application_id VARCHAR")
         _patch("users", "school", "school VARCHAR")
+
+        # p2p_disputes columns added after initial schema
+        _patch("p2p_disputes", "payment_id", "payment_id VARCHAR")
     except Exception as e:
         print(f"[startup] schema patch pass failed (continuing): {e}")
 

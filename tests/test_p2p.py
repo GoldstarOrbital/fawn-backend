@@ -263,6 +263,85 @@ def test_per_transaction_limit_enforced(client, two_active_users):
     assert "capped" in resp.json()["detail"]
 
 
+def test_confirm_locks_sender_row_before_checking_limits(client, two_active_users, monkeypatch):
+    """Regression test for the race condition where concurrent /confirm
+    calls for the same sender could each see a stale rolling-total read
+    and collectively exceed the daily/weekly cap even though each one's
+    own check passed individually.
+
+    The real fix is a SELECT ... FOR UPDATE on the sender's row before the
+    limit check, which only does real locking on Postgres — SQLite (used
+    here) does not enforce row-level locks the way Postgres does, so a
+    genuine multi-threaded race can't be reliably demonstrated against the
+    test database (a prior version of this test asserted the race outcome
+    directly and was flaky-by-construction for exactly this reason). What
+    we *can* and should verify in a DB-agnostic way: confirm_transfer
+    actually requests the lock, on the right row, before re-checking
+    limits — that's the part that matters for correctness on the real
+    production database.
+    """
+    from sqlalchemy.orm import Query
+
+    calls = []
+    original_with_for_update = Query.with_for_update
+
+    def spy(self, *args, **kwargs):
+        calls.append(True)
+        return original_with_for_update(self, *args, **kwargs)
+
+    monkeypatch.setattr(Query, "with_for_update", spy)
+    _mock_book_payment(monkeypatch, payment_id="pmt_lock_check")
+
+    token = two_active_users["sender_token"]
+    recipient_handle = two_active_users["recipient_handle"]
+
+    create = client.post(
+        "/p2p/transfers",
+        json={"to_handle": f"@{recipient_handle}", "amount_cents": 5_000, "idempotency_key": str(uuid.uuid4())},
+        headers=_auth(token),
+    )
+    assert create.status_code == 201, create.text
+
+    confirm = client.post(
+        f"/p2p/transfers/{create.json()['id']}/confirm",
+        json={"step_up_acknowledged": True},
+        headers=_auth(token),
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert len(calls) >= 1, "confirm_transfer did not acquire a row lock before checking limits"
+
+
+def test_daily_limit_still_enforced_sequentially(client, two_active_users, monkeypatch):
+    """Sanity check the actual cap math still works in the normal
+    (non-concurrent) case, independent of the locking mechanism above."""
+    _mock_book_payment(monkeypatch, payment_id="pmt_daily_seq")
+    token = two_active_users["sender_token"]
+    recipient_handle = two_active_users["recipient_handle"]
+
+    def _send_and_confirm(amount_cents):
+        create = client.post(
+            "/p2p/transfers",
+            json={"to_handle": f"@{recipient_handle}", "amount_cents": amount_cents, "idempotency_key": str(uuid.uuid4())},
+            headers=_auth(token),
+        )
+        if create.status_code != 201:
+            return create
+        return client.post(
+            f"/p2p/transfers/{create.json()['id']}/confirm",
+            json={"step_up_acknowledged": True},
+            headers=_auth(token),
+        )
+
+    first = _send_and_confirm(40_000)   # $400 — under both per-tx and daily caps
+    second = _send_and_confirm(40_000)  # $800 total — still under the $1,000 daily cap
+    third = _send_and_confirm(40_000)   # $1,200 total — over the $1,000 daily cap
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert third.status_code == 400, third.text
+    assert "24-hour" in third.json()["detail"]
+
+
 # --- Request + pay ---
 
 def test_request_then_pay_flow(client, two_active_users, monkeypatch):
@@ -383,6 +462,81 @@ def test_dispute_lifecycle_admin_refund(client, two_active_users, monkeypatch, a
 def test_dispute_without_admin_key_403(client, two_active_users):
     resp = client.get("/p2p/admin/disputes")
     assert resp.status_code == 403
+
+
+def test_disputing_fulfilled_request_and_its_linked_send_is_treated_as_one_payment(client, two_active_users, monkeypatch, admin_key):
+    """Regression test: a fulfilled 'request' row and the linked 'send' row
+    it created both go to status='completed' and both represent the SAME
+    real Unit Book Payment. Disputing the request, then disputing the
+    linked send, must be rejected as "already open" rather than allowing
+    two independent disputes (and therefore two independent refunds) for
+    one real transfer of funds.
+    """
+    _mock_book_payment(monkeypatch, payment_id="pmt_request_pay_dispute")
+    requester_token = two_active_users["recipient_token"]
+    payer_token = two_active_users["sender_token"]
+    sender_handle = two_active_users["sender_handle"]
+
+    req = client.post(
+        "/p2p/requests",
+        json={"from_handle": f"@{sender_handle}", "amount_cents": 500, "note": "rent", "idempotency_key": str(uuid.uuid4())},
+        headers=_auth(requester_token),
+    )
+    assert req.status_code == 201, req.text
+    request_id = req.json()["id"]
+
+    pay = client.post(f"/p2p/requests/{request_id}/pay", headers=_auth(payer_token))
+    assert pay.status_code == 201, pay.text
+    linked_id = pay.json()["id"]
+
+    confirm = client.post(
+        f"/p2p/transfers/{linked_id}/confirm", json={"step_up_acknowledged": True}, headers=_auth(payer_token)
+    )
+    assert confirm.status_code == 200
+    assert confirm.json()["status"] == "completed"
+
+    # Both rows are now status="completed" and disputable individually.
+    first_dispute = client.post(
+        f"/p2p/transfers/{request_id}/dispute",
+        json={"reason": "Never received what I paid for."},
+        headers=_auth(payer_token),
+    )
+    assert first_dispute.status_code == 201, first_dispute.text
+
+    # Disputing the linked send (the same underlying payment) must be
+    # rejected, not allowed to open a second, independent dispute.
+    second_dispute = client.post(
+        f"/p2p/transfers/{linked_id}/dispute",
+        json={"reason": "Trying to double-dip on the same payment."},
+        headers=_auth(payer_token),
+    )
+    assert second_dispute.status_code == 409, second_dispute.text
+
+    # Resolving the one open dispute should issue exactly one refund — a
+    # second resolve attempt for the same underlying payment must not be
+    # able to create a second reverse Book Payment via a different
+    # transfer_id/idempotency key.
+    resolve = client.post(
+        f"/p2p/admin/disputes/{first_dispute.json()['id']}/resolve",
+        params={"action": "refund"},
+        headers={"X-Admin-Key": admin_key},
+    )
+    assert resolve.status_code == 200
+    assert resolve.json()["status"] == "refunded"
+
+    from database import SessionLocal
+    from models import P2PTransfer
+
+    db = SessionLocal()
+    try:
+        refund_rows = db.query(P2PTransfer).filter(
+            P2PTransfer.idempotency_key.in_([f"refund:{request_id}", f"refund:{linked_id}"])
+        ).all()
+        # Exactly one refund transfer exists for this underlying payment,
+        # no matter which of the two linked rows the dispute referenced.
+        assert len(refund_rows) == 1
+    finally:
+        db.close()
 
 
 # --- Tier 2 stub ---

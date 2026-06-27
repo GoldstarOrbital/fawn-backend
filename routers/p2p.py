@@ -240,6 +240,18 @@ async def confirm_transfer(request: Request, transfer_id: str, req: P2PConfirmRe
     if transfer.status not in ("pending", "requires_step_up"):
         raise HTTPException(status_code=400, detail=f"This transfer can't be confirmed (status: {transfer.status}).")
 
+    # Lock the sender's user row for the remainder of this transaction so
+    # concurrent /confirm calls for the same sender (different transfers)
+    # serialize here instead of racing the rolling-limit check below — each
+    # call would otherwise only see previously-completed transfers, not
+    # transfers concurrently in flight through this same code path, letting
+    # the sum of simultaneously-confirmed transfers exceed the daily/weekly
+    # caps even though each one's own check passed. On Postgres this is a
+    # real row lock (SELECT ... FOR UPDATE) held until commit/rollback; on
+    # SQLite (tests) it's a harmless no-op since SQLite already serializes
+    # writers at the connection/file level.
+    db.query(User).filter(User.id == transfer.from_user_id).with_for_update().first()
+
     if transfer.step_up_required and not req.step_up_acknowledged:
         _audit(db, transfer.id, current_user.id, "step_up_required", {})
         db.commit()
@@ -416,6 +428,23 @@ def list_transfers(current_user: User = Depends(get_current_user), db: Session =
 
 # --- Disputes (Reg E–style claims layer) ---
 
+def _canonical_payment_id(db: Session, transfer: P2PTransfer) -> str:
+    """A 'request' that's been paid and its linked 'send' both represent the
+    same real movement of funds (see pay_request/confirm_transfer above).
+    Resolve either row to the id of the underlying 'send' transfer so that
+    disputing the request and disputing its linked send are treated as
+    disputing the same payment, not two separate ones.
+    """
+    if transfer.type == "request":
+        linked_send = db.query(P2PTransfer).filter(
+            P2PTransfer.source_request_id == transfer.id,
+            P2PTransfer.type == "send",
+        ).first()
+        if linked_send:
+            return linked_send.id
+    return transfer.id
+
+
 @router.post("/transfers/{transfer_id}/dispute", response_model=P2PDisputeOut, status_code=201)
 @limiter.limit("10/minute")
 def dispute_transfer(request: Request, transfer_id: str, req: P2PDisputeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -427,15 +456,27 @@ def dispute_transfer(request: Request, transfer_id: str, req: P2PDisputeRequest,
     if transfer.status != "completed":
         raise HTTPException(status_code=400, detail="Only completed transfers can be disputed.")
 
-    open_existing = db.query(P2PDispute).filter(P2PDispute.transfer_id == transfer_id, P2PDispute.status == "open").first()
+    payment_id = _canonical_payment_id(db, transfer)
+    # Also fold in the legacy per-row check (transfer_id == this row, or the
+    # row on the other side of the request/send link) for disputes filed
+    # before payment_id existed and was always populated.
+    sibling_id = transfer.source_request_id if transfer.type == "send" else payment_id
+    open_existing = db.query(P2PDispute).filter(
+        P2PDispute.status == "open",
+        or_(
+            P2PDispute.payment_id == payment_id,
+            P2PDispute.transfer_id == transfer_id,
+            P2PDispute.transfer_id == sibling_id,
+        ),
+    ).first()
     if open_existing:
         raise HTTPException(status_code=409, detail="A dispute is already open for this transfer.")
 
-    dispute = P2PDispute(transfer_id=transfer_id, filer_user_id=current_user.id, reason=req.reason)
+    dispute = P2PDispute(transfer_id=transfer_id, payment_id=payment_id, filer_user_id=current_user.id, reason=req.reason)
     transfer.status = "disputed"
     db.add(dispute)
     db.flush()
-    _audit(db, transfer_id, current_user.id, "disputed", {"dispute_id": dispute.id})
+    _audit(db, transfer_id, current_user.id, "disputed", {"dispute_id": dispute.id, "payment_id": payment_id})
     db.commit()
     return P2PDisputeOut(id=dispute.id, transfer_id=transfer_id, status=dispute.status, reason=dispute.reason, created_at=dispute.created_at.isoformat())
 
@@ -483,7 +524,11 @@ async def resolve_dispute(dispute_id: str, action: str, note: Optional[str] = No
     if action == "refund":
         sender = db.query(User).filter(User.id == transfer.from_user_id).first()
         recipient = db.query(User).filter(User.id == transfer.to_user_id).first()
-        refund_key = f"refund:{transfer.id}"
+        # Use the canonical underlying-payment id (not this dispute's own
+        # transfer row id) so that a refund already issued via the linked
+        # request/send row's dispute is recognized here too, and vice versa.
+        payment_id = dispute.payment_id or _canonical_payment_id(db, transfer)
+        refund_key = f"refund:{payment_id}"
         already = db.query(P2PTransfer).filter(P2PTransfer.idempotency_key == refund_key).first()
         if not already:
             payment = await unit_svc.create_book_payment(
