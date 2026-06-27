@@ -68,8 +68,12 @@ def _send_reset_email(email: str, raw_token: str) -> bool:
             },
             timeout=10.0,
         )
-        return r.status_code in (200, 201)
-    except Exception:
+        if r.status_code not in (200, 201):
+            print(f"[auth] password reset email to {email} failed: {r.status_code} {r.text[:300]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[auth] password reset email to {email} raised: {e}")
         return False
 
 

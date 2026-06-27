@@ -1,5 +1,9 @@
 """Tests for the most security-critical auth paths."""
 
+import httpx
+
+import routers.auth as auth_router
+
 
 def _register_payload(email="Test@Example.COM", password="supersecret1"):
     return {
@@ -65,3 +69,47 @@ def test_patch_me_updates_school(client):
     get_resp = client.get("/auth/me", headers=headers)
     assert get_resp.status_code == 200
     assert get_resp.json()["school"] == "stanford"
+
+
+def test_send_reset_email_logs_on_non_2xx_status(monkeypatch, capsys):
+    """Regression guard: a non-2xx response from Resend for the password-reset
+    email must be logged with the status code and response body, not silently
+    swallowed. This is the same silent-failure pattern as the waitlist bug,
+    but here it hides failures in account recovery."""
+    monkeypatch.setattr(auth_router.settings, "resend_api_key", "test-key")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
+    class FakeResponse:
+        status_code = 422
+        text = "from_email not verified"
+
+    def fake_post(*args, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = auth_router._send_reset_email("student@example.com", "raw-token-123")
+
+    assert result is False
+    captured = capsys.readouterr()
+    assert "422" in captured.out
+    assert "student@example.com" in captured.out
+
+
+def test_send_reset_email_logs_on_exception(monkeypatch, capsys):
+    """Regression guard: an exception raised while calling Resend for the
+    password-reset email must be logged, not silently swallowed."""
+    monkeypatch.setattr(auth_router.settings, "resend_api_key", "test-key")
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+
+    def fake_post(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = auth_router._send_reset_email("student@example.com", "raw-token-123")
+
+    assert result is False
+    captured = capsys.readouterr()
+    assert "student@example.com" in captured.out
+    assert "connection refused" in captured.out
