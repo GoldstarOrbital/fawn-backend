@@ -32,8 +32,8 @@ decision waiting on an answer from Unit, not a coding task.
    surface as a raw 500 or an unhandled exception.
 3. `03-production-cutover-runbook.md` — docs + a config audit for the
    sandbox-to-production switch, not a feature. Low-risk, good first task.
-4. `04-obp-evaluation.md` — research-only: evaluate whether Open Bank
-   Project is actually a fit for FAWN (it's likely an API-middleware
-   layer banks deploy in front of their own core systems, not a
-   sponsor-bank-equivalent to Unit — but verify, don't assume). No code
-   changes in this one.
+4. `04-obp-evaluation.md` — CLOSED. Open Bank Project turned out to be
+   an API-middleware layer banks deploy in front of their own core
+   systems for European-style open-banking regulation, not a
+   sponsor-bank-equivalent to Unit — there's no integration work here.
+   Kept for the record.
