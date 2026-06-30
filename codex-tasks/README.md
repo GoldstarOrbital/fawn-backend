@@ -1,6 +1,6 @@
 # Codex tasks — Unit BaaS integration push
 
-Three independent, scoped prompts for Codex. Each file is self-contained —
+Four independent, scoped prompts for Codex. Each file is self-contained —
 paste its whole content as the task prompt. They don't depend on each other
 and can be run in parallel in separate worktrees/branches.
 
@@ -32,3 +32,8 @@ decision waiting on an answer from Unit, not a coding task.
    surface as a raw 500 or an unhandled exception.
 3. `03-production-cutover-runbook.md` — docs + a config audit for the
    sandbox-to-production switch, not a feature. Low-risk, good first task.
+4. `04-obp-evaluation.md` — research-only: evaluate whether Open Bank
+   Project is actually a fit for FAWN (it's likely an API-middleware
+   layer banks deploy in front of their own core systems, not a
+   sponsor-bank-equivalent to Unit — but verify, don't assume). No code
+   changes in this one.
