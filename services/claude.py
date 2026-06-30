@@ -112,9 +112,9 @@ async def fetch_headlines(keywords: list[str] | None = None, limit: int = 30) ->
     return results
 
 
-async def summarize_financial_news(keywords: list[str] | None = None) -> dict:
+async def summarize_financial_news(keywords: list[str] | None = None, limit: int = 30) -> dict:
     """Return filtered articles. AI summary is optional — raw summaries always work."""
-    articles = await fetch_headlines(keywords=keywords, limit=30)
+    articles = await fetch_headlines(keywords=keywords, limit=limit)
 
     if not articles:
         articles = [{
