@@ -169,8 +169,10 @@ def _welcome_customer(email: str, tier: str, member_number: int):
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
-    secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    secret = settings.stripe_webhook_secret or os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
+    if not secret and not settings.allow_unsigned_stripe_webhooks:
+        raise HTTPException(status_code=500, detail="Stripe webhook secret is not configured")
     if secret and not _verify_stripe_signature(payload, sig_header, secret):
         raise HTTPException(status_code=400, detail="Invalid signature")
 

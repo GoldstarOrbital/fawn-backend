@@ -1,14 +1,11 @@
 """Add Funds: pull money from an external bank account into a FAWN
 deposit account via ACH.
 
-Uses Unit's inline-counterparty ACH payment — no Plaid Link integration
-yet, so there's no verification that the caller actually owns the
-external account they entered. That's a real fraud surface (unauthorized
-ACH debit is a known abuse pattern), so limits here are deliberately
-conservative until Plaid verification is added on top of this. Treat
-"add Plaid ownership verification" as the next step before raising these
-caps, the same way P2P's Tier 2 external-send is gated on confirming
-which rail Unit's sponsor bank supports.
+Uses Unit's inline-counterparty ACH payment. Raw bank details are blocked
+by default because format validation does not prove that the caller owns
+the external account they entered. Only enable ALLOW_UNVERIFIED_ACH_FUNDING
+in local/sandbox development while building a Plaid, microdeposit, or
+Unit verified-counterparty flow.
 
 ACH settles in days, not instantly, and can be returned by the sending
 bank — never treat a "completed" Unit API call here as final/irreversible
@@ -28,6 +25,7 @@ from models import User, FundingRequest, P2PAuditLog
 from schemas import AddFundsRequest, FundingRequestOut, FundingRequestList
 from dependencies import get_current_user
 from services import unit as unit_svc
+from config import settings
 
 router = APIRouter(prefix="/funding", tags=["funding"])
 limiter = Limiter(key_func=get_remote_address)
@@ -65,6 +63,14 @@ def _check_limits(db: Session, user_id: str, amount_cents: int):
 async def add_funds(request: Request, req: AddFundsRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user.unit_account_id:
         raise HTTPException(status_code=400, detail="You need an active FAWN bank account before you can add funds.")
+    if not settings.allow_unverified_ach_funding:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Add Funds is temporarily disabled until external bank account "
+                "ownership verification is enabled."
+            ),
+        )
 
     existing = db.query(FundingRequest).filter(FundingRequest.idempotency_key == req.idempotency_key).first()
     if existing:

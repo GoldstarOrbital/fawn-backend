@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     unit_webhook_secret: str = ""
+    allow_unverified_ach_funding: bool = False
+    allow_unsigned_stripe_webhooks: bool = False
 
     @field_validator("database_url")
     @classmethod

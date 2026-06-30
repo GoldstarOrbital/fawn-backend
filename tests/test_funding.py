@@ -3,10 +3,18 @@ an external bank account into the user's FAWN deposit account)."""
 import uuid
 from datetime import datetime, timedelta
 from jose import jwt
+import pytest
 
 from database import SessionLocal
 from models import User, FundingRequest
 from config import settings
+import routers.funding as funding_router
+
+
+@pytest.fixture(autouse=True)
+def _allow_unverified_ach_for_legacy_funding_tests(monkeypatch):
+    monkeypatch.setattr(funding_router.settings, "allow_unverified_ach_funding", True)
+    monkeypatch.setattr(funding_router.limiter, "enabled", False, raising=False)
 
 
 def _create_active_user(email, unit_account_id="acc_funding_test"):
@@ -54,6 +62,14 @@ def test_add_funds_without_active_account_400(client):
     user_id = _create_active_user(f"noacct_{uuid.uuid4().hex[:8]}@example.com", unit_account_id=None)
     resp = client.post("/funding/add-funds", json=_valid_payload(), headers=_auth(_token_for(user_id)))
     assert resp.status_code == 400
+
+
+def test_add_funds_rejects_raw_bank_details_when_verification_gate_closed(client, monkeypatch):
+    monkeypatch.setattr(funding_router.settings, "allow_unverified_ach_funding", False)
+    user_id = _create_active_user(f"gate_{uuid.uuid4().hex[:8]}@example.com")
+    resp = client.post("/funding/add-funds", json=_valid_payload(), headers=_auth(_token_for(user_id)))
+    assert resp.status_code == 403
+    assert "ownership verification" in resp.json()["detail"]
 
 
 def test_add_funds_happy_path_never_stores_full_account_number(client, monkeypatch):
