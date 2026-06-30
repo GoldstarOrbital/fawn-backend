@@ -231,6 +231,31 @@ def test_duplicate_idempotency_key_returns_same_transfer_not_a_new_one(client, t
     assert len(matching) == 1  # never double-created
 
 
+def test_send_idempotency_replay_is_scoped_to_sender(client, two_active_users):
+    key = f"send-replay-{uuid.uuid4()}"
+    payload = {
+        "to_handle": f"@{two_active_users['recipient_handle']}",
+        "amount_cents": 250,
+        "idempotency_key": key,
+    }
+
+    first = client.post("/p2p/transfers", json=payload, headers=_auth(two_active_users["sender_token"]))
+    assert first.status_code == 201, first.text
+
+    replay = client.post(
+        "/p2p/transfers",
+        json={
+            "to_handle": f"@{two_active_users['sender_handle']}",
+            "amount_cents": 350,
+            "idempotency_key": key,
+        },
+        headers=_auth(two_active_users["recipient_token"]),
+    )
+    assert replay.status_code == 404
+    assert first.json()["id"] not in replay.text
+    assert two_active_users["recipient_handle"] not in replay.text
+
+
 def test_confirming_twice_is_idempotent(client, two_active_users, monkeypatch):
     _mock_book_payment(monkeypatch, payment_id="pmt_double_confirm")
     token = two_active_users["sender_token"]
@@ -379,6 +404,36 @@ def test_request_then_pay_flow(client, two_active_users, monkeypatch):
     assert original["status"] == "completed"
 
 
+def test_request_idempotency_replay_is_scoped_to_requester(client, two_active_users):
+    key = f"request-replay-{uuid.uuid4()}"
+
+    first = client.post(
+        "/p2p/requests",
+        json={
+            "from_handle": f"@{two_active_users['sender_handle']}",
+            "amount_cents": 400,
+            "note": "rent split",
+            "idempotency_key": key,
+        },
+        headers=_auth(two_active_users["recipient_token"]),
+    )
+    assert first.status_code == 201, first.text
+
+    replay = client.post(
+        "/p2p/requests",
+        json={
+            "from_handle": f"@{two_active_users['recipient_handle']}",
+            "amount_cents": 500,
+            "note": "new request",
+            "idempotency_key": key,
+        },
+        headers=_auth(two_active_users["sender_token"]),
+    )
+    assert replay.status_code == 404
+    assert first.json()["id"] not in replay.text
+    assert "rent split" not in replay.text
+
+
 # --- Split the bill ---
 
 def test_split_creates_one_request_per_recipient_with_shared_group(client, two_active_users):
@@ -403,6 +458,38 @@ def test_split_creates_one_request_per_recipient_with_shared_group(client, two_a
     assert len(transfers) == 2
     assert transfers[0]["group_id"] == transfers[1]["group_id"]
     assert sum(t["amount_cents"] for t in transfers) == 1000
+
+
+def test_split_idempotency_replay_is_scoped_to_creator(client, two_active_users):
+    third_email = f"splitthird_{uuid.uuid4().hex[:8]}@example.com"
+    _register(client, third_email, "Split Third")
+    _activate_account(third_email)
+    _set_handle_direct(third_email, "splitthird")
+    key = f"split-replay-{uuid.uuid4()}"
+
+    first = client.post(
+        "/p2p/splits",
+        json={
+            "total_amount_cents": 1000,
+            "recipient_handles": [f"@{two_active_users['sender_handle']}", "@splitthird"],
+            "idempotency_key": key,
+        },
+        headers=_auth(two_active_users["recipient_token"]),
+    )
+    assert first.status_code == 201, first.text
+
+    replay = client.post(
+        "/p2p/splits",
+        json={
+            "total_amount_cents": 1200,
+            "recipient_handles": [f"@{two_active_users['recipient_handle']}", "@splitthird"],
+            "idempotency_key": key,
+        },
+        headers=_auth(two_active_users["sender_token"]),
+    )
+    assert replay.status_code == 404
+    for row in first.json()["transfers"]:
+        assert row["id"] not in replay.text
 
 
 def test_split_too_small_to_divide_rejected(client, two_active_users):

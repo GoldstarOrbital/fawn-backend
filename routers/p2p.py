@@ -193,6 +193,8 @@ def lookup_handle(handle: str, current_user: User = Depends(get_current_user), d
 async def create_send(request: Request, req: P2PSendRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     existing = db.query(P2PTransfer).filter(P2PTransfer.idempotency_key == req.idempotency_key).first()
     if existing:
+        if existing.from_user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Transfer not found.")
         return _to_out(existing, current_user.id)
 
     _require_active_account(current_user)
@@ -305,6 +307,8 @@ async def confirm_transfer(request: Request, transfer_id: str, req: P2PConfirmRe
 def create_request(request: Request, req: P2PRequestRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     existing = db.query(P2PTransfer).filter(P2PTransfer.idempotency_key == req.idempotency_key).first()
     if existing:
+        if existing.to_user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Request not found.")
         return _to_out(existing, current_user.id)
 
     my_handle = _get_handle_row(db, current_user.id)
@@ -378,6 +382,8 @@ def pay_request(request: Request, request_id: str, current_user: User = Depends(
 def create_split(request: Request, req: P2PSplitRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     existing = db.query(P2PTransfer).filter(P2PTransfer.idempotency_key.like(f"{req.idempotency_key}:%")).all()
     if existing:
+        if any(t.to_user_id != current_user.id for t in existing):
+            raise HTTPException(status_code=404, detail="Split not found.")
         return P2PTransferList(transfers=[_to_out(t, current_user.id) for t in existing])
 
     my_handle = _get_handle_row(db, current_user.id)

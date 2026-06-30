@@ -74,6 +74,8 @@ async def add_funds(request: Request, req: AddFundsRequest, current_user: User =
 
     existing = db.query(FundingRequest).filter(FundingRequest.idempotency_key == req.idempotency_key).first()
     if existing:
+        if existing.user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Funding request not found.")
         return _to_out(existing)
 
     _check_limits(db, current_user.id, req.amount_cents)

@@ -106,6 +106,29 @@ def test_duplicate_idempotency_key_returns_same_request(client, monkeypatch):
     assert first.json()["id"] == second.json()["id"]
 
 
+def test_idempotency_key_replay_is_scoped_to_current_user(client, monkeypatch):
+    _mock_unit_payment(monkeypatch)
+    user_a = _create_active_user(f"fund_a_{uuid.uuid4().hex[:8]}@example.com")
+    user_b = _create_active_user(f"fund_b_{uuid.uuid4().hex[:8]}@example.com")
+    key = f"funding-replay-{uuid.uuid4()}"
+
+    first = client.post(
+        "/funding/add-funds",
+        json=_valid_payload(amount_cents=5000, idempotency_key=key),
+        headers=_auth(_token_for(user_a)),
+    )
+    assert first.status_code == 201, first.text
+
+    replay = client.post(
+        "/funding/add-funds",
+        json=_valid_payload(amount_cents=7000, idempotency_key=key),
+        headers=_auth(_token_for(user_b)),
+    )
+    assert replay.status_code == 404
+    assert first.json()["id"] not in replay.text
+    assert "6789" not in replay.text
+
+
 def test_per_request_limit_enforced(client):
     user_id = _create_active_user(f"toobig_{uuid.uuid4().hex[:8]}@example.com")
     resp = client.post(
