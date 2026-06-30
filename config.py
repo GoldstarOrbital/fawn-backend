@@ -17,6 +17,16 @@ class Settings(BaseSettings):
     unit_webhook_secret: str = ""
     allow_unverified_ach_funding: bool = False
     allow_unsigned_stripe_webhooks: bool = False
+    allow_unsigned_unit_webhooks: bool = False
+    allowed_origins: str = (
+        "https://goldstarorbital.com,"
+        "https://www.goldstarorbital.com,"
+        "https://goldstarorbital.github.io,"
+        "http://localhost:3000,"
+        "http://localhost:3001,"
+        "http://localhost:8080,"
+        "http://127.0.0.1:5500"
+    )
 
     @field_validator("database_url")
     @classmethod
@@ -28,6 +38,10 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
 
 settings = Settings()
 

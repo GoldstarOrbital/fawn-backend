@@ -16,6 +16,8 @@ class User(Base):
     phone = Column(String, nullable=True)
     is_student = Column(Boolean, default=False)
     school = Column(String, nullable=True)  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
+    location = Column(String, nullable=True)  # user-entered city/campus location for local personalization
+    military_status = Column(String, nullable=True)  # "none", "military_veteran_or_rotc", etc.
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Unit identifiers — set after BaaS account creation

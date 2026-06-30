@@ -56,6 +56,8 @@ def _mock_get_application(monkeypatch, customer_id, status="approved"):
 
 
 def test_webhook_without_secret_configured_processes_unverified(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config.settings, "allow_unsigned_unit_webhooks", True)
     application_id = f"app_{uuid.uuid4().hex[:8]}"
     customer_id = f"cust_{uuid.uuid4().hex[:8]}"
     user_id = _create_pending_user(f"hook1_{uuid.uuid4().hex[:8]}@example.com", application_id)
@@ -79,7 +81,19 @@ def test_webhook_without_secret_configured_processes_unverified(client, monkeypa
     assert user.unit_customer_id == customer_id
 
 
+def test_webhook_without_secret_rejects_by_default(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config.settings, "unit_webhook_secret", "")
+    monkeypatch.setattr(config.settings, "allow_unsigned_unit_webhooks", False)
+
+    body = _approved_event(f"evt_{uuid.uuid4().hex[:8]}", "app_x", "cust_x")
+    resp = client.post("/unit/webhook", json=body)
+    assert resp.status_code == 503
+
+
 def test_webhook_duplicate_event_id_not_reprocessed(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config.settings, "allow_unsigned_unit_webhooks", True)
     application_id = f"app_{uuid.uuid4().hex[:8]}"
     customer_id = f"cust_{uuid.uuid4().hex[:8]}"
     _create_pending_user(f"hook2_{uuid.uuid4().hex[:8]}@example.com", application_id)
@@ -120,8 +134,10 @@ def test_webhook_with_secret_rejects_bad_signature(client, monkeypatch):
 def test_webhook_ignores_forged_customer_id_in_body(client, monkeypatch):
     """The handler must use the customer_id from Unit's own API response,
     not whatever the request body claims — otherwise an unauthenticated
-    caller (no UNIT_WEBHOOK_SECRET configured yet) could link an arbitrary
+    caller (when unsigned local webhook testing is explicitly enabled) could link an arbitrary
     customer/account id to a victim's FAWN account."""
+    import config
+    monkeypatch.setattr(config.settings, "allow_unsigned_unit_webhooks", True)
     application_id = f"app_{uuid.uuid4().hex[:8]}"
     real_customer_id = f"cust_real_{uuid.uuid4().hex[:8]}"
     forged_customer_id = f"cust_FORGED_{uuid.uuid4().hex[:8]}"
@@ -152,6 +168,8 @@ def test_webhook_skips_if_unit_says_not_actually_approved(client, monkeypatch):
     """Even if the request body claims type=application.approved, the
     handler must not finish account setup unless Unit's own API confirms
     the application status is actually approved."""
+    import config
+    monkeypatch.setattr(config.settings, "allow_unsigned_unit_webhooks", True)
     application_id = f"app_{uuid.uuid4().hex[:8]}"
     customer_id = f"cust_{uuid.uuid4().hex[:8]}"
     user_id = _create_pending_user(f"hooknotreally_{uuid.uuid4().hex[:8]}@example.com", application_id)

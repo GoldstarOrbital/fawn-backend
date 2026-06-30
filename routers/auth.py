@@ -105,6 +105,8 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
         phone=req.phone,
         is_student=req.is_student,
         school=req.school,
+        location=req.location,
+        military_status=req.military_status,
     )
     db.add(user)
     db.flush()
@@ -182,6 +184,10 @@ def update_me(
 ):
     if req.school is not None:
         current_user.school = req.school
+    if req.location is not None:
+        current_user.location = req.location
+    if req.military_status is not None:
+        current_user.military_status = req.military_status
     db.commit()
     db.refresh(current_user)
     return UserResponse.from_orm_user(current_user)

@@ -64,8 +64,18 @@ Navigate to `http://localhost:8001/docs`
 | `DATABASE_URL` | No | Defaults to SQLite. Use `postgresql://...` for prod. |
 | `UNIT_API_TOKEN` | For banking features | From app.s.unit.co sandbox dashboard |
 | `UNIT_BASE_URL` | No | Defaults to `https://api.s.unit.sh` (sandbox) |
+| `UNIT_WEBHOOK_SECRET` | Yes for Unit webhooks | Rejects unsigned Unit webhook deliveries unless local override is enabled |
+| `ALLOW_UNSIGNED_UNIT_WEBHOOKS` | Local/dev only | Set `true` only for local webhook testing without Unit signatures |
 | `ANTHROPIC_API_KEY` | For AI news | From console.anthropic.com |
 | `JWT_SECRET` | Yes (change in prod) | Any long random string |
+| `ALLOWED_ORIGINS` | Yes for launch | Comma-separated browser origins allowed by CORS |
+| `RESEND_API_KEY` | For email | Password reset and lifecycle emails |
+| `FROM_EMAIL` | For email | Verified Resend sender, defaults to `alex@getfawn.com` |
+| `ADMIN_API_KEY` | Yes for admin routes | Required for admin and backfill endpoints |
+| `STRIPE_SECRET_KEY` | For paid memberships | Stripe API key |
+| `STRIPE_WEBHOOK_SECRET` | Yes for Stripe webhooks | Verifies paid-member webhook events |
+| `ALLOW_UNSIGNED_STRIPE_WEBHOOKS` | Local/dev only | Keep `false` outside local testing |
+| `ALLOW_UNVERIFIED_ACH_FUNDING` | No for launch | Keep `false` until external-account ownership verification is live |
 
 ## API Endpoints
 
@@ -99,7 +109,7 @@ Navigate to `http://localhost:8001/docs`
 
 ## How Registration Works
 
-1. User submits email, password, name, phone
+1. User submits email, password, name, phone, DOB, SSN, address, and optional school/location/military status
 2. FAWN creates a local `User` record in the DB
 3. FAWN calls Unit's `/applications` endpoint to create an individual application
 4. Unit instantly approves (sandbox SSN `721074426` always approves)
@@ -117,5 +127,6 @@ Navigate to `http://localhost:8001/docs`
 
 - Never commit `.env` to git
 - Rotate `JWT_SECRET` before any real deployment
-- `allow_origins=["*"]` in CORS is fine for dev — tighten to your frontend domain in prod
+- CORS is configured from `ALLOWED_ORIGINS`; include every production web app domain before launch
+- Keep unsigned Stripe and Unit webhook overrides disabled outside local development
 - The sandbox Unit token in `.env` should be rotated periodically

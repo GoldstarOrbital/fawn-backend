@@ -79,6 +79,8 @@ def _init_db_schema():
         _patch("users", "is_student", "is_student BOOLEAN DEFAULT FALSE")
         _patch("users", "unit_application_id", "unit_application_id VARCHAR")
         _patch("users", "school", "school VARCHAR")
+        _patch("users", "location", "location VARCHAR")
+        _patch("users", "military_status", "military_status VARCHAR")
 
         # p2p_disputes columns added after initial schema
         _patch("p2p_disputes", "payment_id", "payment_id VARCHAR")
@@ -99,15 +101,7 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-ALLOWED_ORIGINS = [
-    "https://goldstarorbital.com",
-    "https://www.goldstarorbital.com",
-    "https://goldstarorbital.github.io",
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:8080",
-    "http://127.0.0.1:5500",
-]
+ALLOWED_ORIGINS = settings.allowed_origins_list
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
 

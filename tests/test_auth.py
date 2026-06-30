@@ -23,6 +23,8 @@ def _register_payload(email="Test@Example.COM", password="supersecret1"):
         "is_student": True,
         "occupation": "Student",
         "school": "berkeley",
+        "location": "Berkeley, CA",
+        "military_status": "none",
     }
 
 
@@ -69,6 +71,35 @@ def test_patch_me_updates_school(client):
     get_resp = client.get("/auth/me", headers=headers)
     assert get_resp.status_code == 200
     assert get_resp.json()["school"] == "stanford"
+
+
+def test_register_and_patch_me_preserves_personalization_fields(client):
+    payload = _register_payload(email="personalized@example.com")
+    payload["military_status"] = "military_veteran_or_rotc"
+    register_resp = client.post("/auth/register", json=payload)
+    assert register_resp.status_code == 201
+    token = register_resp.json()["access_token"]
+
+    headers = {"Authorization": f"Bearer {token}"}
+    me_resp = client.get("/auth/me", headers=headers)
+    assert me_resp.status_code == 200
+    assert me_resp.json()["school"] == "berkeley"
+    assert me_resp.json()["location"] == "Berkeley, CA"
+    assert me_resp.json()["military_status"] == "military_veteran_or_rotc"
+
+    patch_resp = client.patch(
+        "/auth/me",
+        json={
+            "school": "stanford",
+            "location": "Palo Alto, CA",
+            "military_status": "none",
+        },
+        headers=headers,
+    )
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["school"] == "stanford"
+    assert patch_resp.json()["location"] == "Palo Alto, CA"
+    assert patch_resp.json()["military_status"] == "none"
 
 
 def test_send_reset_email_logs_on_non_2xx_status(monkeypatch, capsys):

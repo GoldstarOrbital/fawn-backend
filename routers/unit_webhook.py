@@ -10,9 +10,9 @@ or the sandbox-only /accounts/activate-sandbox unstick button.
 
 Signature verified via UNIT_WEBHOOK_SECRET (HMAC-SHA1 of the raw body,
 base64-encoded, compared against the X-Unit-Signature header — see
-https://www.unit.co/docs/api/webhooks/). If no secret is configured yet
-(webhook not registered in Unit's dashboard), verification is skipped —
-same lenient-until-configured pattern as the Stripe webhook.
+https://www.unit.co/docs/api/webhooks/). Production should fail closed when
+the secret is missing. Local/dev can opt into unsigned webhooks with
+ALLOW_UNSIGNED_UNIT_WEBHOOKS=true.
 
 Register in Unit's dashboard → Webhooks:
   URL: https://web-production-13d5b.up.railway.app/unit/webhook
@@ -80,6 +80,8 @@ async def unit_webhook(request: Request, db: Session = Depends(get_db)):
     sig_header = request.headers.get("x-unit-signature", "")
     secret = settings.unit_webhook_secret
 
+    if not secret and not settings.allow_unsigned_unit_webhooks:
+        raise HTTPException(status_code=503, detail="Unit webhook secret is not configured")
     if secret and not _verify_unit_signature(payload, sig_header, secret):
         raise HTTPException(status_code=400, detail="Invalid signature")
 

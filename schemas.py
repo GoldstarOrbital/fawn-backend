@@ -23,6 +23,8 @@ class RegisterRequest(BaseModel):
     is_student: bool = True
     occupation: str = "Student"
     school: Optional[str] = None  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
+    location: Optional[str] = None
+    military_status: Optional[str] = None
 
     @field_validator("email")
     @classmethod
@@ -93,6 +95,8 @@ class LoginRequest(BaseModel):
 
 class UpdateMeRequest(BaseModel):
     school: Optional[str] = None
+    location: Optional[str] = None
+    military_status: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -106,6 +110,8 @@ class UserResponse(BaseModel):
     full_name: str
     is_student: bool
     school: Optional[str] = None
+    location: Optional[str] = None
+    military_status: Optional[str] = None
     account_active: Optional[bool] = None
     application_pending: Optional[bool] = None
 
@@ -117,6 +123,8 @@ class UserResponse(BaseModel):
             full_name=user.full_name,
             is_student=user.is_student,
             school=getattr(user, "school", None),
+            location=getattr(user, "location", None),
+            military_status=getattr(user, "military_status", None),
             account_active=bool(user.unit_account_id),
             application_pending=bool(
                 getattr(user, "unit_application_id", None) and not user.unit_account_id
