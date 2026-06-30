@@ -1,3 +1,5 @@
+from database import SessionLocal
+from models import User
 from tests.test_auth import _register_payload
 
 
@@ -74,6 +76,13 @@ def test_create_application_form_returns_unit_url(client, monkeypatch):
     }
     assert seen["email"] == "unitform@example.com"
     assert seen["school"] == "berkeley"
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "unitform@example.com").first()
+        assert user.unit_application_form_id == "form_123"
+    finally:
+        db.close()
 
 
 def test_create_application_form_requires_unit_token(client, monkeypatch):

@@ -197,6 +197,18 @@ async def create_application_form(
         return resp.json()["data"]
 
 
+async def get_application_form(unit_application_form_id: str, include_application: bool = True) -> dict:
+    params = {"include": "application"} if include_application else None
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{settings.unit_base_url}/application-forms/{unit_application_form_id}",
+            params=params,
+            headers=_application_form_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def get_customer_accounts(unit_customer_id: str) -> list:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(

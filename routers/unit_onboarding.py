@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
 from config import settings
+from database import get_db
 from dependencies import get_current_user
 from models import User
 from schemas import UnitApplicationFormPrefillResponse
@@ -70,7 +72,10 @@ def _extract_application_form_url(form: dict) -> str:
 
 
 @router.post("/application-form")
-async def create_application_form(current_user: User = Depends(get_current_user)):
+async def create_application_form(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Create a Unit-hosted KYC application form for the current user."""
     if current_user.unit_account_id:
         raise HTTPException(status_code=409, detail="Bank account is already active.")
@@ -94,6 +99,10 @@ async def create_application_form(current_user: User = Depends(get_current_user)
     form_url = _extract_application_form_url(form)
     if not form_url:
         raise HTTPException(status_code=502, detail="Unit did not return an application form URL.")
+
+    current_user.unit_application_form_id = form.get("id")
+    db.commit()
+    db.refresh(current_user)
 
     return {
         "application_form_id": form.get("id"),

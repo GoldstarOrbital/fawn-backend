@@ -78,6 +78,7 @@ def _init_db_schema():
         _patch("users", "phone", "phone VARCHAR")
         _patch("users", "is_student", "is_student BOOLEAN DEFAULT FALSE")
         _patch("users", "unit_application_id", "unit_application_id VARCHAR")
+        _patch("users", "unit_application_form_id", "unit_application_form_id VARCHAR")
         _patch("users", "school", "school VARCHAR")
         _patch("users", "location", "location VARCHAR")
         _patch("users", "military_status", "military_status VARCHAR")
