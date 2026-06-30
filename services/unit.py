@@ -27,6 +27,12 @@ def _headers(idempotency_key: str | None = None):
     return headers
 
 
+def _application_form_headers(idempotency_key: str | None = None):
+    headers = _headers(idempotency_key=idempotency_key)
+    headers["X-Accept-Version"] = "V2024_06"
+    return headers
+
+
 async def create_application(
     full_name: str,
     email: str,
@@ -161,6 +167,14 @@ async def create_application_form(
         "data": {
             "type": "applicationForm",
             "attributes": {
+                "idempotencyKey": f"fawn-user-{user_id}",
+                "lang": "en",
+                "tags": {
+                    "fawnUserId": user_id,
+                    "school": school or "",
+                    "militaryStatus": military_status or "",
+                },
+                "allowedApplicationTypes": ["Individual"],
                 "applicantDetails": {
                     "fullName": {"first": first, "last": last},
                     "email": email,
@@ -170,14 +184,6 @@ async def create_application_form(
                     },
                     "occupation": "Student" if is_student else "",
                 },
-                "settingsOverride": {
-                    "idempotencyKey": f"fawn-user-{user_id}",
-                    "tags": {
-                        "fawnUserId": user_id,
-                        "school": school or "",
-                        "militaryStatus": military_status or "",
-                    },
-                },
             },
         }
     }
@@ -185,7 +191,7 @@ async def create_application_form(
         resp = await client.post(
             f"{settings.unit_base_url}/application-forms",
             json=payload,
-            headers=_headers(idempotency_key=f"fawn-application-form-{user_id}"),
+            headers=_application_form_headers(idempotency_key=f"fawn-application-form-{user_id}"),
         )
         resp.raise_for_status()
         return resp.json()["data"]
