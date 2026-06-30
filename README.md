@@ -82,10 +82,12 @@ Navigate to `http://localhost:8001/docs`
 ### Auth
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/auth/register` | No | Create account + Unit BaaS onboarding |
+| POST | `/auth/register` | No | Create FAWN user; optionally starts direct Unit sandbox KYC when SSN/DOB/address are supplied |
 | POST | `/auth/login` | No | Get JWT token (JSON body) |
 | POST | `/auth/token` | No | Get JWT token (OAuth2 form — used by Swagger) |
 | GET | `/auth/me` | Yes | Get current user profile |
+| POST | `/unit/application-form` | Yes | Create a Unit-hosted KYC application form and return its URL |
+| GET | `/unit/application-form-prefill` | Yes | Unit hosted application-form config/prefill endpoint |
 
 ### Accounts
 | Method | Path | Auth | Description |
@@ -109,18 +111,20 @@ Navigate to `http://localhost:8001/docs`
 
 ## How Registration Works
 
-1. User submits email, password, name, phone, DOB, SSN, address, and optional school/location/military status
-2. FAWN creates a local `User` record in the DB
-3. FAWN calls Unit's `/applications` endpoint to create an individual application
-4. Unit instantly approves (sandbox SSN `721074426` always approves)
-5. A Unit customer ID and deposit account ID are saved back to the User record
-6. All future balance/transaction calls go directly to Unit using those IDs
+1. User submits email, password, name, phone, and optional school/location/military status
+2. FAWN creates a local `User` record in the DB without storing SSN, DOB, or address
+3. Production onboarding calls `POST /unit/application-form` to create a Unit-hosted KYC form
+4. FAWN returns the Unit-hosted form URL and the browser opens it for the user
+5. FAWN tags the Unit form/application with `fawnUserId`
+6. Unit webhooks finish account activation once KYC is approved, then all balance/transaction calls go directly to Unit
+
+For sandbox-only smoke tests, `/auth/register` still accepts DOB, SSN, and address. When all three are supplied and `UNIT_API_TOKEN` is configured, FAWN creates the Unit individual application directly. Sandbox SSN `721074426` is the happy-path approval value.
 
 ## Regulatory Notes
 
 - FAWN is **not** a bank. Deposits are held at Unit's FDIC-member bank partner.
 - The AI news feature is **informational only** — not investment advice.
-- For production: replace sandbox SSN/address with real KYC collection via Unit's hosted form.
+- For production: use Unit's hosted application form; do not collect SSN/address in FAWN-owned forms.
 - For production: switch `UNIT_BASE_URL` to `https://api.unit.co`
 
 ## Security Notes

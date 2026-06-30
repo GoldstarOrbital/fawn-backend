@@ -137,6 +137,60 @@ async def create_deposit_account(unit_customer_id: str) -> dict:
         return resp.json()["data"]
 
 
+async def create_application_form(
+    user_id: str,
+    full_name: str,
+    email: str,
+    phone: str,
+    is_student: bool,
+    school: str | None = None,
+    military_status: str | None = None,
+) -> dict:
+    """Create a Unit-hosted application form for KYC onboarding.
+
+    The user enters SSN/address and other sensitive KYC data inside Unit's
+    hosted flow. FAWN sends only non-sensitive prefill fields and tags the
+    application with our user id so webhooks can link the approved customer
+    back to the local account.
+    """
+    first, *rest = full_name.strip().split()
+    last = " ".join(rest) if rest else "Unknown"
+    phone_digits = re.sub(r"\D", "", phone or "")[-10:]
+
+    payload = {
+        "data": {
+            "type": "applicationForm",
+            "attributes": {
+                "applicantDetails": {
+                    "fullName": {"first": first, "last": last},
+                    "email": email,
+                    "phone": {
+                        "countryCode": "1",
+                        "number": phone_digits,
+                    },
+                    "occupation": "Student" if is_student else "",
+                },
+                "settingsOverride": {
+                    "idempotencyKey": f"fawn-user-{user_id}",
+                    "tags": {
+                        "fawnUserId": user_id,
+                        "school": school or "",
+                        "militaryStatus": military_status or "",
+                    },
+                },
+            },
+        }
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings.unit_base_url}/application-forms",
+            json=payload,
+            headers=_headers(idempotency_key=f"fawn-application-form-{user_id}"),
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]
+
+
 async def get_customer_accounts(unit_customer_id: str) -> list:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(

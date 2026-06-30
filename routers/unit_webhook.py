@@ -1,22 +1,10 @@
 """
-routers/unit_webhook.py
+Unit webhook receiver.
 
-Unit webhook receiver. On application.approved: finishes account setup
-(creates the deposit account) immediately, the same way auth.py's
-register() does on the instant-approve path — this is what actually makes
-that "account creation will retry via webhook" comment in auth.py true,
-instead of relying purely on /accounts/refresh-application-status polling
-or the sandbox-only /accounts/activate-sandbox unstick button.
-
-Signature verified via UNIT_WEBHOOK_SECRET (HMAC-SHA1 of the raw body,
-base64-encoded, compared against the X-Unit-Signature header — see
-https://www.unit.co/docs/api/webhooks/). Production should fail closed when
-the secret is missing. Local/dev can opt into unsigned webhooks with
-ALLOW_UNSIGNED_UNIT_WEBHOOKS=true.
-
-Register in Unit's dashboard → Webhooks:
-  URL: https://web-production-13d5b.up.railway.app/unit/webhook
-  Events: application.approved, application.denied, application.pendingReview
+On application.approved, finishes account setup by creating the Unit deposit
+account. Direct sandbox KYC users are matched by unit_application_id. Hosted
+Unit application-form users are matched by the fawnUserId tag FAWN sends when
+creating the form.
 """
 import base64
 import hashlib
@@ -52,18 +40,21 @@ async def _handle_application_approved(event: dict, db: Session):
     if not application_id:
         return
 
-    user = db.query(User).filter(User.unit_application_id == application_id).first()
-    if not user or user.unit_account_id:
-        return  # not ours, or already finished (e.g. by the sandbox-activate button)
-
-    # Don't trust customer_id from the request body — until UNIT_WEBHOOK_SECRET
-    # is configured this endpoint is unauthenticated, so a forged payload could
-    # otherwise link an attacker-supplied customer/account to this user. Re-fetch
-    # the application from Unit directly (our own bearer token, not request data)
-    # and only proceed if Unit itself confirms it's approved.
     application = await unit_svc.get_application(application_id)
     if application.get("attributes", {}).get("status") != "approved":
         return
+
+    user = db.query(User).filter(User.unit_application_id == application_id).first()
+    if not user:
+        tags = application.get("attributes", {}).get("tags", {}) or {}
+        fawn_user_id = tags.get("fawnUserId")
+        if fawn_user_id:
+            user = db.query(User).filter(User.id == fawn_user_id).first()
+            if user and not user.unit_application_id:
+                user.unit_application_id = application_id
+    if not user or user.unit_account_id:
+        return
+
     customer_id = application.get("relationships", {}).get("customer", {}).get("data", {}).get("id")
     if not customer_id:
         return
@@ -111,8 +102,6 @@ async def unit_webhook(request: Request, db: Session = Depends(get_db)):
             if event_type == "application.approved":
                 await _handle_application_approved(event, db)
         except Exception as e:
-            # Never fail the whole webhook delivery over one event — log and move on,
-            # Unit will not retry a 200, but a 5xx would retry-storm every event again.
             print(f"[Unit webhook] failed to process {event_type} ({event_id}): {e}")
 
         processed.append({"type": event_type, "duplicate": False})

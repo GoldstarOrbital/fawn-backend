@@ -23,6 +23,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from database import Base, engine  # noqa: E402
 import main  # noqa: E402  (imports + registers all routers, runs _init_db_schema)
+from routers import auth, waitlist  # noqa: E402
+
+main.app.state.limiter.enabled = False
+auth.limiter.enabled = False
+waitlist.limiter.enabled = False
 
 
 @pytest.fixture(scope="session", autouse=True)

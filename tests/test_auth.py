@@ -57,6 +57,24 @@ def test_duplicate_email_registration_fails_400(client):
     assert second.status_code == 400
 
 
+def test_register_without_sensitive_kyc_fields_for_hosted_unit_form(client):
+    payload = _register_payload(email="hostedkyc@example.com")
+    payload.pop("ssn")
+    payload.pop("date_of_birth")
+    payload.pop("address")
+
+    resp = client.post("/auth/register", json=payload)
+    assert resp.status_code == 201
+    token = resp.json()["access_token"]
+
+    me_resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_resp.status_code == 200
+    body = me_resp.json()
+    assert body["account_active"] is False
+    assert body["application_pending"] is False
+    assert body["unit_application_form_ready"] is True
+
+
 def test_patch_me_updates_school(client):
     payload = _register_payload(email="patchme@example.com")
     register_resp = client.post("/auth/register", json=payload)

@@ -55,6 +55,23 @@ def _mock_get_application(monkeypatch, customer_id, status="approved"):
     monkeypatch.setattr("routers.unit_webhook.unit_svc.get_application", fake_get_application)
 
 
+def _create_hosted_form_user(email):
+    db = SessionLocal()
+    try:
+        user = User(
+            email=email.lower(),
+            hashed_password="x",
+            full_name="Hosted Form Tester",
+            is_student=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user.id
+    finally:
+        db.close()
+
+
 def test_webhook_without_secret_configured_processes_unverified(client, monkeypatch):
     import config
     monkeypatch.setattr(config.settings, "allow_unsigned_unit_webhooks", True)
@@ -213,3 +230,38 @@ def test_webhook_with_secret_accepts_correct_signature(client, monkeypatch):
         headers={"Content-Type": "application/json", "x-unit-signature": signature},
     )
     assert resp.status_code == 200, resp.text
+
+
+def test_webhook_links_hosted_form_user_by_fawn_user_id_tag(client, monkeypatch):
+    import config
+    monkeypatch.setattr(config.settings, "allow_unsigned_unit_webhooks", True)
+
+    user_id = _create_hosted_form_user(f"hostedhook_{uuid.uuid4().hex[:8]}@example.com")
+    application_id = f"app_hosted_{uuid.uuid4().hex[:8]}"
+    customer_id = f"cust_hosted_{uuid.uuid4().hex[:8]}"
+
+    async def fake_get_application(app_id):
+        return {
+            "id": app_id,
+            "attributes": {
+                "status": "approved",
+                "tags": {"fawnUserId": user_id},
+            },
+            "relationships": {"customer": {"data": {"id": customer_id}}},
+        }
+    monkeypatch.setattr("routers.unit_webhook.unit_svc.get_application", fake_get_application)
+
+    async def fake_create_deposit_account(cust_id):
+        return {"id": "acc_hosted_form"}
+    monkeypatch.setattr("routers.unit_webhook.unit_svc.create_deposit_account", fake_create_deposit_account)
+
+    body = _approved_event(f"evt_{uuid.uuid4().hex[:8]}", application_id, customer_id)
+    resp = client.post("/unit/webhook", json=body)
+    assert resp.status_code == 200, resp.text
+
+    db = SessionLocal()
+    user = db.query(User).filter(User.id == user_id).first()
+    db.close()
+    assert user.unit_application_id == application_id
+    assert user.unit_customer_id == customer_id
+    assert user.unit_account_id == "acc_hosted_form"

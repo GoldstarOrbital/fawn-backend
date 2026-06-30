@@ -17,9 +17,9 @@ class RegisterRequest(BaseModel):
     password: str
     full_name: str
     phone: str
-    date_of_birth: str   # YYYY-MM-DD, passed to Unit, not stored
-    ssn: str             # 9 digits, passed to Unit, NEVER stored
-    address: Address
+    date_of_birth: Optional[str] = None  # YYYY-MM-DD, passed to Unit when direct KYC is used
+    ssn: Optional[str] = None            # 9 digits, passed to Unit when direct KYC is used, NEVER stored
+    address: Optional[Address] = None
     is_student: bool = True
     occupation: str = "Student"
     school: Optional[str] = None  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
@@ -42,7 +42,9 @@ class RegisterRequest(BaseModel):
 
     @field_validator("ssn")
     @classmethod
-    def ssn_format(cls, v: str) -> str:
+    def ssn_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
         digits = re.sub(r"\D", "", v)
         if len(digits) != 9:
             raise ValueError("SSN must be 9 digits")
@@ -50,7 +52,9 @@ class RegisterRequest(BaseModel):
 
     @field_validator("date_of_birth")
     @classmethod
-    def dob_format(cls, v: str) -> str:
+    def dob_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
         try:
             _date.fromisoformat(v)
         except ValueError:
@@ -114,6 +118,7 @@ class UserResponse(BaseModel):
     military_status: Optional[str] = None
     account_active: Optional[bool] = None
     application_pending: Optional[bool] = None
+    unit_application_form_ready: Optional[bool] = None
 
     @classmethod
     def from_orm_user(cls, user):  # type: ignore[override]
@@ -129,7 +134,12 @@ class UserResponse(BaseModel):
             application_pending=bool(
                 getattr(user, "unit_application_id", None) and not user.unit_account_id
             ),
+            unit_application_form_ready=not bool(user.unit_account_id),
         )
+
+
+class UnitApplicationFormPrefillResponse(BaseModel):
+    data: dict
 
 # --- Accounts ---
 

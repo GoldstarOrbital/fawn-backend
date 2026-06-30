@@ -111,10 +111,13 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     db.add(user)
     db.flush()
 
-    # Submit KYC application to Unit.
-    # SSN is used here and immediately discarded — never persisted.
+    # Submit direct KYC to Unit only when the caller provides the full
+    # sensitive payload. Production clients should prefer Unit's hosted
+    # application form via /unit/application-form-prefill so FAWN never
+    # handles SSNs directly.
     unit_token_set = settings.unit_api_token not in ("UNIT_TOKEN_NOT_SET", "")
-    if unit_token_set:
+    direct_kyc_payload = bool(req.ssn and req.date_of_birth and req.address)
+    if unit_token_set and direct_kyc_payload:
         try:
             application = await unit_svc.create_application(
                 full_name=req.full_name,
