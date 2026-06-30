@@ -7,6 +7,27 @@ from services import claude as claude_svc
 router = APIRouter(prefix="/news", tags=["news"])
 
 
+@router.get("/public-headlines")
+async def get_public_headlines(
+    q: Optional[str] = Query(default=None, max_length=120),
+    keywords: Optional[List[str]] = Query(default=None),
+    limit: int = Query(default=12, ge=1, le=20),
+):
+    """
+    Public landing-page preview for live financial news.
+    Does not expose user data or require an account.
+    """
+    search_terms = _build_search_terms(q, keywords)
+    result = await claude_svc.summarize_financial_news(keywords=search_terms, limit=limit)
+    return {
+        **result,
+        "query": q or "",
+        "keywords": search_terms,
+        "refresh_seconds": 1,
+        "disclaimer": "Financial news for informational purposes only. Not investment advice.",
+    }
+
+
 @router.get("/headlines")
 async def get_headlines(
     q: Optional[str] = Query(default=None, max_length=120),
