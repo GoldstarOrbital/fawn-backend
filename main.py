@@ -1,4 +1,4 @@
-import time
+﻿import time
 import os
 try:
     import sentry_sdk
@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -28,7 +28,7 @@ _START_TIME = time.time()
 def _init_db_schema():
     """Create tables and patch any columns added after the initial deploy.
 
-    SQLAlchemy's create_all() only creates missing TABLES — it never adds
+    SQLAlchemy's create_all() only creates missing TABLES â€” it never adds
     missing COLUMNS to an existing table. On Railway the `waitlist` table
     was originally created without `source` / `referral_code`, so any query
     that selects those columns now returns 500. Patch them in idempotently.
@@ -67,9 +67,9 @@ def _init_db_schema():
         # founding_members columns
         _patch("founding_members", "refunded", "refunded BOOLEAN DEFAULT FALSE NOT NULL")
 
-        # magic_link_tokens — no extra patches needed (create_all handles new tables)
-        # password_reset_tokens — no extra patches needed (create_all handles new tables)
-        # stripe_events — no extra patches needed
+        # magic_link_tokens â€” no extra patches needed (create_all handles new tables)
+        # password_reset_tokens â€” no extra patches needed (create_all handles new tables)
+        # stripe_events â€” no extra patches needed
 
         # users columns added after initial schema
         _patch("users", "referral_code", "referral_code VARCHAR")
@@ -95,7 +95,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 app = FastAPI(
     title="FAWN API",
-    description="Financial AI + World News — banking backend",
+    description="Financial AI + World News â€” banking backend",
     version="0.2.0",
 )
 
@@ -128,7 +128,7 @@ async def security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(), payment=()"
     # Swagger/ReDoc load their UI from a CDN, so they need a looser policy.
-    # Every other route is a JSON API with no inline scripts — lock it down fully.
+    # Every other route is a JSON API with no inline scripts â€” lock it down fully.
     if request.url.path.startswith(_DOCS_PATHS):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self' cdn.jsdelivr.net 'unsafe-inline'; "
@@ -157,6 +157,7 @@ app.include_router(unit_webhook.router)
 app.include_router(funding.router)
 app.include_router(unit_onboarding.router)
 app.include_router(podcast.router)
+app.include_router(money_review.router)
 
 
 @app.on_event("startup")
@@ -166,7 +167,7 @@ async def _start_podcast_scheduler():
     A plain asyncio loop instead of an external cron: sleep until the next
     release time, generate, repeat. Safe against restarts and (unlikely)
     multiple instances because generate_episode is idempotent per Pacific
-    date — the unique episode_date row is the lock.
+    date â€” the unique episode_date row is the lock.
     """
     import asyncio
     from services import podcast as podcast_svc
@@ -207,7 +208,7 @@ def status():
     except Exception:
         pass
 
-    # Unit API reachability — attempt a connection; any HTTP response means the host is up
+    # Unit API reachability â€” attempt a connection; any HTTP response means the host is up
     unit_ok = False
     try:
         import urllib.request
@@ -221,7 +222,7 @@ def status():
             urllib.request.urlopen(req, timeout=3)
             unit_ok = True
         except urllib.error.HTTPError:
-            # Got an HTTP error response — host is reachable
+            # Got an HTTP error response â€” host is reachable
             unit_ok = True
         except urllib.error.URLError:
             unit_ok = False

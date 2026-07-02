@@ -225,3 +225,92 @@ async def generate_news_digest(articles: list[dict], focus: str | None = None) -
         _DIGEST_CACHE.clear()  # tiny cache — wholesale reset is fine
     _DIGEST_CACHE[cache_key] = (now + _DIGEST_TTL_SECONDS, digest)
     return digest
+
+
+REVIEW_MODEL = "claude-sonnet-5"  # quality matters; one call per user request, rate-limited
+
+
+async def generate_money_review(
+    category_totals: dict[str, float],
+    transactions_sample: list[dict],
+    monthly_income_dollars: float | None = None,
+    goals: str | None = None,
+    pasted_data: str | None = None,
+) -> str | None:
+    """One-shot personal money review for a college student, consolidating
+    the classic '10 money prompts' into a single pass over their REAL
+    spending data: budget check, overspend/wins, subscription audit,
+    negotiation targets, savings & emergency-fund step, debt note, food
+    spend, big-purchase rule, income ideas, and 3 specific adjustments.
+
+    Strictly budgeting/spending analysis — the prompt forbids investment
+    advice and invented numbers. Returns None if no key or the call fails.
+    """
+    if not _anthropic_configured():
+        return None
+
+    parts = []
+    if category_totals:
+        parts.append("SPENDING BY CATEGORY THIS PERIOD (from their FAWN account):\n" +
+                     "\n".join(f"- {cat}: ${amt:,.2f}" for cat, amt in sorted(category_totals.items(), key=lambda x: -x[1])))
+    if transactions_sample:
+        parts.append("RECENT TRANSACTIONS (sample):\n" +
+                     "\n".join(f"- {t.get('date','')} {t.get('description','')}: ${abs(t.get('amount',0)):,.2f}"
+                               for t in transactions_sample[:40]))
+    if pasted_data:
+        parts.append(f"DATA THE USER PASTED THEMSELVES:\n{pasted_data[:4000]}")
+    if not parts:
+        return None
+    if monthly_income_dollars:
+        parts.append(f"STATED MONTHLY INCOME: ${monthly_income_dollars:,.2f}")
+    if goals:
+        parts.append(f"THEIR STATED GOALS: {goals[:500]}")
+
+    prompt = (
+        "You are FAWN's money review assistant for U.S. college students. Run a complete "
+        "monthly financial review over the data below, doing ALL of the following in one pass:\n"
+        "1. BUDGET CHECK: infer a reasonable simple budget from their income (or from spending "
+        "if no income given) and compare actual spending to it.\n"
+        "2. OVERSPENT / DID WELL: name the specific categories, with their real numbers.\n"
+        "3. SUBSCRIPTION AUDIT: flag recurring charges worth cancelling or downgrading.\n"
+        "4. NEGOTIATION TARGETS: bills in the data a student could realistically call and negotiate.\n"
+        "5. SAVINGS STEP: one concrete emergency-fund/savings action sized to their actual numbers.\n"
+        "6. DEBT NOTE: only if debt payments appear in the data — otherwise skip silently.\n"
+        "7. FOOD REALITY CHECK: dining/delivery/coffee vs groceries, with the actual totals.\n"
+        "8. BIG-PURCHASE RULE: one sentence of guardrail relevant to their spending pattern.\n"
+        "9. EARN IDEA: one realistic student income idea connected to something in their data.\n"
+        "10. THREE ADJUSTMENTS: end with exactly three specific, numbered changes for next month, "
+        "each with a dollar estimate of impact.\n\n"
+        "HARD RULES: Use ONLY the numbers in the data — never invent amounts, merchants, or debts. "
+        "If a section has no supporting data, say 'not enough data' or skip it rather than guessing. "
+        "NO investment advice of any kind (no stocks, crypto, funds, or 'invest the difference'). "
+        "Plain English, direct, non-judgmental. Under 450 words. Plain text only — no markdown "
+        "symbols, use SECTION HEADINGS IN CAPS.\n\n" + "\n\n".join(parts)
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": settings.anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": REVIEW_MODEL,
+                    "max_tokens": 1500,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            if resp.status_code != 200:
+                print(f"[money-review] call failed: {resp.status_code} {resp.text[:300]}")
+                return None
+            data = resp.json()
+            review = "".join(
+                b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
+            ).strip()
+            return review or None
+    except Exception as e:
+        print(f"[money-review] call raised: {e}")
+        return None
