@@ -1,26 +1,49 @@
 """
 News service for FAWN.
-Fetches headlines + summaries from major financial RSS feeds.
+Fetches headlines + summaries from major financial and world-news RSS feeds,
+and (when an Anthropic key is configured) generates a cached plain-English
+AI digest of what the stories mean for a college student's money.
 Returns full article excerpts so the frontend never needs to open external links.
 """
+import time
 import httpx
 import xml.etree.ElementTree as ET
 import re
 from config import settings
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # cheap + fast; digests are short
 
-# Major financial RSS feeds with descriptions/summaries
-RSS_FEEDS = [
-    ("CNBC",          "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
-    ("CNBC Markets",  "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
-    ("MarketWatch",   "https://feeds.marketwatch.com/marketwatch/topstories/"),
-    ("Reuters",       "https://feeds.reuters.com/reuters/businessNews"),
-    ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC&region=US&lang=en-US"),
-    ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=BTC-USD&region=US&lang=en-US"),
-    ("Investopedia",  "https://www.investopedia.com/feedbuilder/feed/getfeed/?feedName=rss_articles"),
-    ("Seeking Alpha", "https://seekingalpha.com/market_currents.xml"),
-]
+# Feeds grouped by category so the UI can offer Markets / World / Crypto tabs.
+# "markets" is the default and matches the original feed list.
+RSS_FEEDS_BY_CATEGORY = {
+    "markets": [
+        ("CNBC",          "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
+        ("CNBC Markets",  "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
+        ("MarketWatch",   "https://feeds.marketwatch.com/marketwatch/topstories/"),
+        ("Reuters",       "https://feeds.reuters.com/reuters/businessNews"),
+        ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC&region=US&lang=en-US"),
+        ("Investopedia",  "https://www.investopedia.com/feedbuilder/feed/getfeed/?feedName=rss_articles"),
+        ("Seeking Alpha", "https://seekingalpha.com/market_currents.xml"),
+    ],
+    "world": [
+        ("BBC World",     "https://feeds.bbci.co.uk/news/world/rss.xml"),
+        ("BBC Business",  "https://feeds.bbci.co.uk/news/business/rss.xml"),
+        ("NPR World",     "https://feeds.npr.org/1004/rss.xml"),
+        ("Al Jazeera",    "https://www.aljazeera.com/xml/rss/all.xml"),
+        ("The Guardian",  "https://www.theguardian.com/world/rss"),
+    ],
+    "crypto": [
+        ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=BTC-USD&region=US&lang=en-US"),
+        ("CoinDesk",      "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+        ("Cointelegraph", "https://cointelegraph.com/rss"),
+    ],
+}
+VALID_CATEGORIES = tuple(RSS_FEEDS_BY_CATEGORY.keys())
+
+# Backward-compatible flat list (markets + the BTC feed), used when no
+# category is specified so existing callers see the same behavior.
+RSS_FEEDS = RSS_FEEDS_BY_CATEGORY["markets"] + [RSS_FEEDS_BY_CATEGORY["crypto"][0]]
 
 def _clean(text: str) -> str:
     """Strip HTML tags and excessive whitespace from RSS description fields."""
@@ -40,18 +63,20 @@ def _clean(text: str) -> str:
     return text
 
 
-async def fetch_headlines(keywords: list[str] | None = None, limit: int = 30) -> list[dict]:
+async def fetch_headlines(keywords: list[str] | None = None, limit: int = 30, category: str | None = None) -> list[dict]:
     """
     Fetch articles with title + summary passage from major RSS feeds.
-    Filters by keywords if provided.
+    Filters by keywords if provided; category picks a feed group
+    (markets/world/crypto), defaulting to the original mixed list.
     Returns list of {title, summary, source, pub_date} dicts — no external links.
     """
     kw_lower = [k.lower() for k in keywords] if keywords else []
+    feeds = RSS_FEEDS_BY_CATEGORY.get(category, RSS_FEEDS) if category else RSS_FEEDS
     results = []
     seen = set()
 
     async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-        for source_name, feed_url in RSS_FEEDS:
+        for source_name, feed_url in feeds:
             if len(results) >= limit:
                 break
             try:
@@ -112,9 +137,9 @@ async def fetch_headlines(keywords: list[str] | None = None, limit: int = 30) ->
     return results
 
 
-async def summarize_financial_news(keywords: list[str] | None = None, limit: int = 30) -> dict:
+async def summarize_financial_news(keywords: list[str] | None = None, limit: int = 30, category: str | None = None) -> dict:
     """Return filtered articles. AI summary is optional — raw summaries always work."""
-    articles = await fetch_headlines(keywords=keywords, limit=limit)
+    articles = await fetch_headlines(keywords=keywords, limit=limit, category=category)
 
     if not articles:
         articles = [{
@@ -124,3 +149,79 @@ async def summarize_financial_news(keywords: list[str] | None = None, limit: int
         }]
 
     return {"articles": articles, "ai_summary": None}
+
+
+# --- AI digest -------------------------------------------------------------
+# In-process cache: {cache_key: (expires_at_epoch, digest_text)}. Digests are
+# derived from public headlines (no user data), so sharing across users is
+# fine and keeps Anthropic costs bounded no matter how often the UI polls.
+_DIGEST_CACHE: dict[str, tuple[float, str]] = {}
+_DIGEST_TTL_SECONDS = 300
+_DIGEST_CACHE_MAX = 200
+
+
+def _anthropic_configured() -> bool:
+    key = settings.anthropic_api_key
+    return bool(key) and key != "ANTHROPIC_KEY_NOT_SET"
+
+
+async def generate_news_digest(articles: list[dict], focus: str | None = None) -> str | None:
+    """Plain-English 'what this means for your money' digest of the given
+    headlines, aimed at a college student. Returns None when no Anthropic
+    key is configured or the call fails — callers must treat the digest as
+    strictly optional and never block headlines on it.
+    """
+    if not _anthropic_configured() or not articles:
+        return None
+
+    headline_block = "\n".join(
+        f"- {a['title']} ({a['source']}): {a['summary']}" for a in articles[:12] if a.get("title")
+    )
+    cache_key = f"{focus or ''}|{hash(headline_block)}"
+    now = time.time()
+    cached = _DIGEST_CACHE.get(cache_key)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    focus_line = f' The reader searched for "{focus}" — prioritize relevance to that.' if focus else ""
+    prompt = (
+        "You write FAWN's news digest for U.S. college students. Below are current "
+        f"headlines.{focus_line}\n\n{headline_block}\n\n"
+        "In 3 short bullets (under 30 words each), explain in plain English what the most "
+        "important of these stories actually mean for a college student's money — rent, "
+        "groceries, student loans, part-time wages, savings. No jargon, no hype, no "
+        "investment advice, no emojis. If nothing meaningfully affects students, say so honestly."
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            resp = await client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": settings.anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": ANTHROPIC_MODEL,
+                    "max_tokens": 400,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            if resp.status_code != 200:
+                print(f"[news] digest call failed: {resp.status_code} {resp.text[:300]}")
+                return None
+            data = resp.json()
+            digest = "".join(
+                block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
+            ).strip()
+            if not digest:
+                return None
+    except Exception as e:
+        print(f"[news] digest call raised: {e}")
+        return None
+
+    if len(_DIGEST_CACHE) >= _DIGEST_CACHE_MAX:
+        _DIGEST_CACHE.clear()  # tiny cache — wholesale reset is fine
+    _DIGEST_CACHE[cache_key] = (now + _DIGEST_TTL_SECONDS, digest)
+    return digest

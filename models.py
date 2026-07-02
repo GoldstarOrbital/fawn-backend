@@ -275,6 +275,24 @@ class P2PAuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class NewsAlert(Base):
+    """A saved news-watch query for a user ("AI alerts").
+
+    The user saves a topic ("student loans", "fed rates", "tuition") and
+    the app surfaces fresh matching headlines on each check.
+    last_checked_at lets the UI say "3 new since yesterday" — matching is
+    recomputed live against current feeds on every check.
+    """
+    __tablename__ = "news_alerts"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    query = Column(String, nullable=False)     # the search phrase, <= 60 chars
+    category = Column(String, nullable=True)   # markets | world | crypto | None = default mix
+    last_checked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class EmailLog(Base):
     """Tracks which nurture emails have been sent to each waitlist address.
 
