@@ -432,6 +432,30 @@ def list_transfers(current_user: User = Depends(get_current_user), db: Session =
     return P2PTransferList(transfers=[_to_out(r, current_user.id) for r in rows])
 
 
+@router.get("/limits")
+def get_my_limits(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Remaining send headroom for the current user, so the UI can show
+    "you can send up to $X today" before an attempt instead of only
+    erroring after. Computed from the same rolling totals _check_limits
+    enforces — this is advisory display data; the authoritative check
+    still happens (under a row lock) at confirm time.
+    """
+    now = datetime.now(timezone.utc)
+    day_total = _rolling_total(db, current_user.id, now - timedelta(hours=24))
+    week_total = _rolling_total(db, current_user.id, now - timedelta(days=7))
+    day_remaining = max(0, DAILY_LIMIT_CENTS - day_total)
+    week_remaining = max(0, ROLLING_7DAY_LIMIT_CENTS - week_total)
+    return {
+        "per_transaction_limit_cents": PER_TX_LIMIT_CENTS,
+        "daily_limit_cents": DAILY_LIMIT_CENTS,
+        "weekly_limit_cents": ROLLING_7DAY_LIMIT_CENTS,
+        "daily_remaining_cents": day_remaining,
+        "weekly_remaining_cents": week_remaining,
+        # The most a single new send could be right now, all caps considered.
+        "max_send_cents": min(PER_TX_LIMIT_CENTS, day_remaining, week_remaining),
+    }
+
+
 # --- Disputes (Reg E–style claims layer) ---
 
 def _canonical_payment_id(db: Session, transfer: P2PTransfer) -> str:

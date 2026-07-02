@@ -631,3 +631,47 @@ def test_disputing_fulfilled_request_and_its_linked_send_is_treated_as_one_payme
 def test_external_transfer_returns_501(client, two_active_users):
     resp = client.post("/p2p/external-transfers", headers=_auth(two_active_users["sender_token"]))
     assert resp.status_code == 501
+
+
+# --- Limits headroom endpoint ---
+
+def test_limits_endpoint_fresh_user_full_headroom(client, two_active_users):
+    resp = client.get("/p2p/limits", headers=_auth(two_active_users["sender_token"]))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["daily_remaining_cents"] == body["daily_limit_cents"]
+    assert body["weekly_remaining_cents"] == body["weekly_limit_cents"]
+    assert body["max_send_cents"] == body["per_transaction_limit_cents"]
+
+
+def test_limits_endpoint_reflects_completed_sends(client, two_active_users, monkeypatch):
+    _mock_book_payment(monkeypatch, payment_id="pmt_limits")
+    token = two_active_users["sender_token"]
+    recipient_handle = two_active_users["recipient_handle"]
+
+    create = client.post(
+        "/p2p/transfers",
+        json={"to_handle": f"@{recipient_handle}", "amount_cents": 40_000, "idempotency_key": str(uuid.uuid4())},
+        headers=_auth(token),
+    )
+    assert create.status_code == 201
+    confirm = client.post(
+        f"/p2p/transfers/{create.json()['id']}/confirm",
+        json={"step_up_acknowledged": True},
+        headers=_auth(token),
+    )
+    assert confirm.status_code == 200
+
+    resp = client.get("/p2p/limits", headers=_auth(token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["daily_remaining_cents"] == body["daily_limit_cents"] - 40_000
+    assert body["weekly_remaining_cents"] == body["weekly_limit_cents"] - 40_000
+    # $400 spent of the $1,000 day cap leaves $600 headroom, but a single
+    # send is still bounded by the $500 per-transaction cap.
+    assert body["max_send_cents"] == body["per_transaction_limit_cents"]
+
+
+def test_limits_endpoint_requires_auth(client):
+    resp = client.get("/p2p/limits")
+    assert resp.status_code in (401, 403)
