@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -156,6 +156,37 @@ app.include_router(cards.router)
 app.include_router(unit_webhook.router)
 app.include_router(funding.router)
 app.include_router(unit_onboarding.router)
+app.include_router(podcast.router)
+
+
+@app.on_event("startup")
+async def _start_podcast_scheduler():
+    """Daily 3:30 AM Pacific generation of the FAWN Daily Brief.
+
+    A plain asyncio loop instead of an external cron: sleep until the next
+    release time, generate, repeat. Safe against restarts and (unlikely)
+    multiple instances because generate_episode is idempotent per Pacific
+    date — the unique episode_date row is the lock.
+    """
+    import asyncio
+    from services import podcast as podcast_svc
+
+    async def _loop():
+        while True:
+            try:
+                await asyncio.sleep(podcast_svc.seconds_until_next_release())
+                db = SessionLocal()
+                try:
+                    await podcast_svc.generate_episode(db)
+                finally:
+                    db.close()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[podcast] scheduler pass failed (will retry next cycle): {e}")
+                await asyncio.sleep(300)  # don't tight-loop on repeated failures
+
+    asyncio.get_event_loop().create_task(_loop())
 
 
 @app.get("/health")

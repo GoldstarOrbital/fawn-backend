@@ -15,3 +15,5 @@ psycopg2-binary>=2.9.9
 resend>=2.0.0
 sentry-sdk[fastapi]>=2.0.0
 pytest>=8.0.0
+edge-tts>=6.1.0
+tzdata>=2024.1

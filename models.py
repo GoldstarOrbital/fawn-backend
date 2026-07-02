@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer
+from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer, LargeBinary
 from sqlalchemy.sql import func
 from database import Base
 import uuid
@@ -272,6 +272,29 @@ class P2PAuditLog(Base):
     user_id = Column(String, nullable=False, index=True)
     event_type = Column(String, nullable=False)  # created | step_up_required | confirmed | failed | disputed | dispute_resolved
     metadata_json = Column(String, nullable=True)  # json.dumps'd dict — kept as text for portability
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PodcastEpisode(Base):
+    """One AI-generated daily news brief ("FAWN Daily Brief").
+
+    Generated on a schedule (3:30 AM Pacific) or via the admin endpoint.
+    episode_date is unique — generation is idempotent per day, so scheduler
+    restarts or a manual re-trigger can never produce duplicate episodes.
+    Audio is stored inline (one ~4-5MB MP3 per day, pruned after 14 days)
+    because Railway's filesystem is ephemeral and this avoids adding an
+    object-storage dependency for a single small daily file.
+    """
+    __tablename__ = "podcast_episodes"
+
+    id = Column(String, primary_key=True, default=new_id)
+    episode_date = Column(String, nullable=False, unique=True, index=True)  # YYYY-MM-DD (America/Los_Angeles)
+    title = Column(String, nullable=False)
+    script = Column(String, nullable=False)              # full spoken text, shown as transcript
+    audio_mp3 = Column(LargeBinary, nullable=True)       # null if TTS failed — transcript still served
+    word_count = Column(Integer, nullable=False, default=0)
+    est_duration_seconds = Column(Integer, nullable=False, default=0)
+    source_headline_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
