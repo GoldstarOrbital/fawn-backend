@@ -220,6 +220,28 @@ async def get_customer_accounts(unit_customer_id: str) -> list:
         return resp.json().get("data", [])
 
 
+async def verify_auth() -> bool:
+    """Lightweight authenticated ping: does the configured UNIT_API_TOKEN
+    actually authenticate against the sandbox/prod API right now?
+
+    Makes a minimal GET /accounts (page limit 1). Returns True only on a 2xx
+    (token valid), False on 401/403 (token missing/revoked/rotated-out) or any
+    transport failure. Used by /status to make token rotation verifiable
+    without ever exposing the token. Never raises."""
+    if not settings.unit_api_token or settings.unit_api_token == "UNIT_TOKEN_NOT_SET":
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{settings.unit_base_url}/accounts",
+                params={"page[limit]": 1},
+                headers=_headers(),
+            )
+        return resp.status_code < 300
+    except Exception:
+        return False
+
+
 async def get_account_details(unit_account_id: str) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(

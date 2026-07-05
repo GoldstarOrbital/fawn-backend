@@ -251,3 +251,16 @@ def status():
         "unit_api_reachable": unit_ok,
         "unit_base_url": settings.unit_base_url,
     }
+
+
+@app.get("/status/unit-auth")
+async def unit_auth_status():
+    """Deep check: does the currently-configured UNIT_API_TOKEN authenticate?
+
+    Distinct from /status's `unit_api_reachable` (which only pings the host).
+    This makes an authenticated Unit call and returns only a boolean — no
+    token or account data is exposed. Purpose-built to verify token rotation:
+    after swapping UNIT_API_TOKEN, hit this and expect `unit_auth_ok: true`.
+    """
+    from services import unit as unit_svc
+    return {"unit_auth_ok": await unit_svc.verify_auth(), "unit_base_url": settings.unit_base_url}
