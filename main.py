@@ -296,3 +296,32 @@ async def egress_ip():
         except Exception:
             continue
     return {"egress_ip": None, "error": "could not determine egress IP"}
+
+
+@app.get("/status/net-diag")
+async def net_diag():
+    """Isolate ReadTimeout root cause: MTU/egress blackhole vs Unit-specific block.
+
+    Sends a request with a ~2.1KB Authorization header (mimicking Unit's large
+    token) to a NON-Unit echo host, and separately a small request. If the
+    large request to a neutral host also hangs, the fault is Railway's egress
+    network (large packets dropped), not Unit and not the token.
+    """
+    import httpx
+    big_header = "Bearer " + ("x" * 2100)
+    out = {}
+    # 1) large-header request to a neutral host
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://httpbin.org/headers", headers={"Authorization": big_header})
+        out["large_header_neutral_host"] = f"ok http_{r.status_code}"
+    except Exception as e:
+        out["large_header_neutral_host"] = f"FAILED {type(e).__name__}"
+    # 2) small request to same neutral host (control)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://httpbin.org/get")
+        out["small_neutral_host"] = f"ok http_{r.status_code}"
+    except Exception as e:
+        out["small_neutral_host"] = f"FAILED {type(e).__name__}"
+    return out
