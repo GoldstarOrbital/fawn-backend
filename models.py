@@ -26,6 +26,14 @@ class User(Base):
     unit_application_id = Column(String, nullable=True)  # set when KYC is pending review
     unit_application_form_id = Column(String, nullable=True)  # set for hosted Unit application forms
 
+    # Multi-BaaS provider identifiers (Column / Lithic / Alpaca). All nullable —
+    # populated only once a user is opted into each provider. The Unit fields
+    # above stay authoritative until settings.baas_provider cuts banking over.
+    column_entity_id = Column(String, nullable=True)      # Column person/entity record
+    column_account_id = Column(String, nullable=True)     # Column bank account
+    lithic_account_token = Column(String, nullable=True)  # Lithic financial account backing cards
+    alpaca_account_id = Column(String, nullable=True)     # Alpaca brokerage account
+
     # Referral
     referral_code = Column(String, unique=True, nullable=True, index=True)
     referred_by = Column(String, nullable=True)   # referral_code of inviter
@@ -129,7 +137,12 @@ class Card(Base):
 
     id = Column(String, primary_key=True, default=new_id)
     user_id = Column(String, nullable=False, index=True)
+    # Opaque provider card id. Historically a Unit card id; for Lithic-issued
+    # cards this holds the Lithic card token. `provider` disambiguates which
+    # card service owns it. Column name kept as unit_card_id for schema
+    # backward-compatibility (renaming would need a data migration).
     unit_card_id = Column(String, nullable=False, unique=True, index=True)
+    provider = Column(String, nullable=False, default="unit")  # "unit" | "lithic"
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -328,3 +341,67 @@ class EmailLog(Base):
     email = Column(String, nullable=False, index=True)
     email_number = Column(Integer, nullable=False)   # 2, 3, 4, or 5
     sent_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---- Multi-BaaS provider records (Column / Lithic / Alpaca / Plaid) ---------
+
+class PlaidItem(Base):
+    """A linked external bank account for a user (Plaid).
+
+    Stores the long-lived Plaid access_token — a secret, never exposed to the
+    client. The raw external routing/account numbers are NOT stored here; they
+    are fetched from Plaid at funding time and forwarded to the banking
+    provider, keeping only the last-4 mask for display (same rule as Unit
+    ACH funding).
+    """
+    __tablename__ = "plaid_items"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    item_id = Column(String, nullable=False, unique=True, index=True)  # Plaid item id
+    access_token = Column(String, nullable=False)  # Plaid access_token (secret)
+    institution_name = Column(String, nullable=True)
+    account_mask = Column(String, nullable=True)   # last 4 of linked account
+    status = Column(String, nullable=False, default="active", index=True)  # active | removed
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class InvestingOrder(Base):
+    """A buy/sell order placed against a user's Alpaca brokerage account.
+
+    Alpaca is the source of truth for fill state; this row is a local audit
+    record linking the order back to a FAWN user and letting the UI show
+    order history without an Alpaca round-trip per view.
+    """
+    __tablename__ = "investing_orders"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    alpaca_order_id = Column(String, nullable=True, unique=True, index=True)
+    symbol = Column(String, nullable=False)
+    side = Column(String, nullable=False)   # buy | sell
+    notional_cents = Column(Integer, nullable=True)  # dollar order (fractional), if used
+    qty = Column(Numeric, nullable=True)             # share order, if used
+    status = Column(String, nullable=False, default="pending", index=True)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ColumnEvent(Base):
+    """Idempotency record — every processed Column webhook event id is stored
+    here, mirroring UnitEvent/StripeEvent."""
+    __tablename__ = "column_events"
+
+    id = Column(String, primary_key=True)  # Column event id
+    type = Column(String, nullable=False)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LithicEvent(Base):
+    """Idempotency record — every processed Lithic webhook/auth-stream event id."""
+    __tablename__ = "lithic_events"
+
+    id = Column(String, primary_key=True)  # Lithic event token
+    type = Column(String, nullable=False)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
