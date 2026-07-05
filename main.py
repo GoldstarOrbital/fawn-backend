@@ -271,3 +271,28 @@ async def unit_auth_status():
         "reason": result["reason"],
         "unit_base_url": settings.unit_base_url,
     }
+
+
+@app.get("/status/egress-ip")
+async def egress_ip():
+    """Report this deployment's OUTBOUND public IP.
+
+    Unit API tokens can be IP-allowlisted; authenticated calls from a
+    non-allowlisted IP are silently dropped (they time out rather than 401).
+    This returns the IP Unit sees for our requests, so it can be added to the
+    token's allowlist (or so we can confirm the allowlist should be cleared).
+    Queries a couple of echo services and returns whichever answers first.
+    """
+    import httpx
+    for url in ("https://api.ipify.org?format=json", "https://ifconfig.me/all.json"):
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(url)
+            if r.status_code < 300:
+                data = r.json()
+                ip = data.get("ip") or data.get("ip_addr") or data.get("remote_addr")
+                if ip:
+                    return {"egress_ip": ip, "source": url}
+        except Exception:
+            continue
+    return {"egress_ip": None, "error": "could not determine egress IP"}
