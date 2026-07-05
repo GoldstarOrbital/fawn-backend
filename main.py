@@ -263,4 +263,11 @@ async def unit_auth_status():
     after swapping UNIT_API_TOKEN, hit this and expect `unit_auth_ok: true`.
     """
     from services import unit as unit_svc
-    return {"unit_auth_ok": await unit_svc.verify_auth(), "unit_base_url": settings.unit_base_url}
+    result = await unit_svc.verify_auth()
+    return {
+        "unit_auth_ok": result["ok"],
+        "unit_http_status": result["status"],
+        "detail": result["detail"],
+        "reason": result["reason"],
+        "unit_base_url": settings.unit_base_url,
+    }

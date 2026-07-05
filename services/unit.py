@@ -220,16 +220,22 @@ async def get_customer_accounts(unit_customer_id: str) -> list:
         return resp.json().get("data", [])
 
 
-async def verify_auth() -> bool:
+async def verify_auth() -> dict:
     """Lightweight authenticated ping: does the configured UNIT_API_TOKEN
     actually authenticate against the sandbox/prod API right now?
 
-    Makes a minimal GET /accounts (page limit 1). Returns True only on a 2xx
-    (token valid), False on 401/403 (token missing/revoked/rotated-out) or any
-    transport failure. Used by /status to make token rotation verifiable
-    without ever exposing the token. Never raises."""
+    Makes a minimal GET /accounts (page limit 1) and reports the outcome with
+    a diagnostic `detail` so token-rotation and environment issues are
+    distinguishable without ever exposing the token:
+      - ok=True                    -> token authenticates (2xx)
+      - detail="http_401"/"http_403" -> token rejected (revoked / not allowlisted)
+      - detail="<ExcName>: ..."      -> transport failure (egress blocked/timeout)
+    `reason` carries a short, non-sensitive snippet of Unit's error body.
+    Never raises."""
+    result = {"ok": False, "status": None, "detail": None, "reason": None}
     if not settings.unit_api_token or settings.unit_api_token == "UNIT_TOKEN_NOT_SET":
-        return False
+        result["detail"] = "token_unset"
+        return result
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
@@ -237,9 +243,15 @@ async def verify_auth() -> bool:
                 params={"page[limit]": 1},
                 headers=_headers(),
             )
-        return resp.status_code < 300
-    except Exception:
-        return False
+        result["status"] = resp.status_code
+        result["ok"] = resp.status_code < 300
+        result["detail"] = "ok" if result["ok"] else f"http_{resp.status_code}"
+        if not result["ok"]:
+            # Unit error bodies are JSON:API {errors:[{title,detail}]} — no secrets.
+            result["reason"] = resp.text[:200]
+    except Exception as e:
+        result["detail"] = f"{type(e).__name__}: {e}"[:200]
+    return result
 
 
 async def get_account_details(unit_account_id: str) -> dict:
