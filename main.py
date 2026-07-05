@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -82,6 +82,15 @@ def _init_db_schema():
         _patch("users", "school", "school VARCHAR")
         _patch("users", "location", "location VARCHAR")
         _patch("users", "military_status", "military_status VARCHAR")
+
+        # multi-BaaS provider ids added during the Column/Lithic/Alpaca cutover
+        _patch("users", "column_entity_id", "column_entity_id VARCHAR")
+        _patch("users", "column_account_id", "column_account_id VARCHAR")
+        _patch("users", "lithic_account_token", "lithic_account_token VARCHAR")
+        _patch("users", "alpaca_account_id", "alpaca_account_id VARCHAR")
+
+        # cards.provider distinguishes Unit- vs Lithic-issued cards
+        _patch("cards", "provider", "provider VARCHAR DEFAULT 'unit'")
 
         # p2p_disputes columns added after initial schema
         _patch("p2p_disputes", "payment_id", "payment_id VARCHAR")
@@ -158,6 +167,10 @@ app.include_router(funding.router)
 app.include_router(unit_onboarding.router)
 app.include_router(podcast.router)
 app.include_router(money_review.router)
+app.include_router(investing.router)
+app.include_router(plaid_link.router)
+app.include_router(column_webhook.router)
+app.include_router(lithic_webhook.router)
 
 
 @app.on_event("startup")
