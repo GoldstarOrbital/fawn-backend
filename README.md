@@ -72,33 +72,45 @@ app/
 
 ## Environment Variables
 
+See `.env.example` for the full list with inline notes. Core:
+
 ```
 DATABASE_URL=postgresql://user:pass@localhost/fawn
-COLUMN_API_KEY=...
-COLUMN_SANDBOX=true
-LITHIC_API_KEY=...
-ALPACA_API_KEY=...
-ALLOY_API_KEY=...
-UNIT21_API_KEY=...
-MODERN_TREASURY_API_KEY=...
-JWT_SECRET=...
-SENTRY_DSN=...
+JWT_SECRET=...                     # 32+ chars, required
+UNIT_API_TOKEN=...                 # KYC/onboarding front door
+ANTHROPIC_API_KEY=...
+SENTRY_DSN=...                     # optional
+```
+
+Multi-BaaS provider stack (all optional — each provider stays dormant and
+returns HTTP 503 until its key is set, so the app boots fine with these blank):
+
+```
+BAAS_PROVIDER=unit                 # "unit" | "column" — selects banking backend
+COLUMN_API_KEY= / COLUMN_BASE_URL= / COLUMN_WEBHOOK_SECRET=       # banking
+LITHIC_API_KEY= / LITHIC_BASE_URL= / LITHIC_WEBHOOK_SECRET=       # cards
+ALPACA_API_KEY= / ALPACA_API_SECRET= / ALPACA_BASE_URL=          # investing
+PLAID_CLIENT_ID= / PLAID_SECRET= / PLAID_ENV= / PLAID_BASE_URL=   # bank linking
 ```
 
 ## Status
 
-- [ ] Backend scaffold
-- [ ] DB schema + migrations
-- [ ] Column integration
-- [ ] Alloy + Unit21 KYC/AML
-- [ ] Ledger + event mapping
-- [ ] ACH origination + returns
-- [ ] Wire support
-- [ ] Lithic card issuing
-- [ ] Alpaca investing
-- [ ] Modern Treasury reconciliation
+- [x] Backend scaffold
+- [x] DB schema + startup column patching
+- [x] Column integration — service client + webhook (`services/column.py`, `/column/webhook`)
+- [x] Lithic card issuing — service client + webhook (`services/lithic.py`, `/lithic/webhook`)
+- [x] Alpaca investing — accounts, orders, positions (`services/alpaca.py`, `/investing/*`)
+- [x] Plaid bank linking — link token + exchange (`services/plaid.py`, `/plaid/*`)
+- [ ] Cut `BAAS_PROVIDER=column` over for live money movement (needs Column key + contract)
+- [ ] Wire provider webhooks to business logic (currently record + ack)
+- [ ] KYC/AML vendor (Alloy/Unit21) — TBD
+- [ ] Reconciliation + ledger event mapping
 - [ ] Compliance policies
 - [ ] Pen test + audit
+
+> **Note:** each provider client above is a guarded scaffold — it raises
+> `<Provider>NotConfigured` when unkeyed. Real money movement requires signed
+> commercial agreements and live credentials from each provider.
 
 ---
 
