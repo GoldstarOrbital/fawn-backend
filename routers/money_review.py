@@ -23,7 +23,7 @@ from database import get_db
 from dependencies import get_current_user
 from models import User
 from services import claude as claude_svc
-from services import unit as unit_svc
+from services import stripe_baas as stripe_svc
 from services.categorize import categorize
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -54,9 +54,9 @@ async def run_money_review(
     transactions: list[dict] = []
     category_totals: dict[str, float] = {}
 
-    if current_user.unit_account_id:
+    if current_user.stripe_financial_account_id:
         try:
-            transactions = await unit_svc.list_transactions(current_user.unit_account_id, limit=100)
+            transactions = await stripe_svc.list_transactions(current_user.stripe_account_id, current_user.stripe_financial_account_id, limit=100)
         except Exception as e:
             print(f"[money-review] transaction fetch failed for user {current_user.id}: {e}")
         for t in transactions:

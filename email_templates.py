@@ -87,7 +87,7 @@ def build_email_3(name: str) -> tuple[str, str]:
   </p>
   <p>
     No monthly fees. No minimum balance. No gotchas.
-    Your deposits are FDIC-insured through our banking partner, Unit.
+    Your deposits are FDIC-insured through our banking partner, Stripe.
   </p>
   <p>That's the deal.</p>
   <p>

@@ -1,11 +1,11 @@
 """Tier 2: sends to non-FAWN banks/cards.
 
 Deliberately stubbed. Which rail we use — FedNow/RTP (real-time
-bank-to-bank), push-to-card (Visa Direct/Mastercard Send), or same-day
-ACH fallback — depends on what Unit's sponsor bank actually supports,
-which is still being confirmed (see the Unit go-live email). Do not
-hardcode a rail; implement a real provider behind this interface once
-that answer lands.
+bank-to-bank), push-to-card (Visa Direct/Mastercard Send), Stripe Treasury
+Outbound Payments (ACH/wire), or same-day ACH fallback — depends on which
+of Stripe's outbound rails get approved for the platform's Treasury
+program, which is still being confirmed. Do not hardcode a rail;
+implement a real provider behind this interface once that answer lands.
 """
 from __future__ import annotations
 
@@ -20,10 +20,10 @@ class ExternalRail(str, Enum):
 
 
 class ExternalSendProvider(ABC):
-    """Implement one of these per confirmed rail once Unit tells us what
-    the sponsor bank supports. Router code should depend only on this
-    interface, never on a specific rail, so swapping/adding providers
-    later doesn't touch the P2P router."""
+    """Implement one of these per confirmed rail once Stripe's Treasury
+    outbound-payment capabilities are confirmed for the platform. Router
+    code should depend only on this interface, never on a specific rail,
+    so swapping/adding providers later doesn't touch the P2P router."""
 
     rail: ExternalRail
 
@@ -48,7 +48,7 @@ class NotYetSupportedExternalSendProvider(ExternalSendProvider):
     async def send(self, *args, **kwargs) -> dict:
         raise NotImplementedError(
             "External (non-FAWN) sends aren't available yet — we're confirming which rail "
-            "(FedNow/RTP, push-to-card, or same-day ACH) Unit's sponsor bank supports."
+            "(FedNow/RTP, push-to-card, or same-day ACH) is available through Stripe Treasury."
         )
 
 

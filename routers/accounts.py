@@ -6,49 +6,21 @@ from database import get_db
 from dependencies import get_current_user
 from models import User
 from schemas import AccountBalance
-from services import unit as unit_svc
+from services import stripe_baas as stripe_svc
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
-def _is_approved_unit_status(status: str | None) -> bool:
-    return (status or "").lower() == "approved"
-
-
-async def _finish_approved_application(current_user: User, application: dict, db: Session):
-    app_status = application.get("attributes", {}).get("status", "pending")
-    if not _is_approved_unit_status(app_status):
+async def _finish_active_account(current_user: User, account: dict, db: Session):
+    if not stripe_svc.account_is_active(account):
         return
 
-    relationships = application.get("relationships", {})
-    customer_data = relationships.get("customer", {}).get("data", {})
-    unit_customer_id = customer_data.get("id")
-    if not unit_customer_id:
-        return
-
-    current_user.unit_customer_id = unit_customer_id
-    if not current_user.unit_application_id:
-        current_user.unit_application_id = application.get("id")
-    account = await unit_svc.create_deposit_account(unit_customer_id)
-    current_user.unit_account_id = account["id"]
+    if not current_user.stripe_account_id:
+        current_user.stripe_account_id = account.get("id")
+    financial_account = await stripe_svc.create_financial_account(current_user.stripe_account_id)
+    current_user.stripe_financial_account_id = financial_account["id"]
     db.commit()
     db.refresh(current_user)
-
-
-def _application_from_form_response(form_response: dict) -> dict | None:
-    data = form_response.get("data", {})
-    relationship_id = (
-        data.get("relationships", {})
-        .get("application", {})
-        .get("data", {})
-        .get("id")
-    )
-    for item in form_response.get("included", []) or []:
-        if item.get("id") == relationship_id:
-            return item
-    if relationship_id:
-        return {"id": relationship_id}
-    return None
 
 
 async def _gather(*coros):
@@ -58,26 +30,26 @@ async def _gather(*coros):
 
 @router.get("/balance", response_model=AccountBalance)
 async def get_balance(current_user: User = Depends(get_current_user)):
-    if not current_user.unit_account_id:
+    if not current_user.stripe_financial_account_id:
         raise HTTPException(status_code=404, detail="No bank account linked yet.")
-    return await unit_svc.get_account_balance(current_user.unit_account_id)
+    return await stripe_svc.get_account_balance(current_user.stripe_account_id, current_user.stripe_financial_account_id)
 
 
 @router.get("/details")
 async def get_account_details(current_user: User = Depends(get_current_user)):
-    if not current_user.unit_account_id:
+    if not current_user.stripe_financial_account_id:
         raise HTTPException(status_code=404, detail="No bank account linked yet.")
-    return await unit_svc.get_account_details(current_user.unit_account_id)
+    return await stripe_svc.get_financial_account_details(current_user.stripe_account_id, current_user.stripe_financial_account_id)
 
 
 @router.get("/dashboard")
 async def get_dashboard(current_user: User = Depends(get_current_user)):
     application_pending = bool(
-        getattr(current_user, "unit_application_id", None)
-        and not current_user.unit_account_id
+        getattr(current_user, "stripe_account_id", None)
+        and not current_user.stripe_financial_account_id
     )
 
-    if not current_user.unit_account_id:
+    if not current_user.stripe_financial_account_id:
         return {
             "account_active": False,
             "application_pending": application_pending,
@@ -86,11 +58,12 @@ async def get_dashboard(current_user: User = Depends(get_current_user)):
             "transactions": [],
         }
 
-    account_id = current_user.unit_account_id
+    account_id = current_user.stripe_account_id
+    financial_account_id = current_user.stripe_financial_account_id
     balance, details, transactions = await _gather(
-        unit_svc.get_account_balance(account_id),
-        unit_svc.get_account_details(account_id),
-        unit_svc.list_transactions(account_id, limit=10),
+        stripe_svc.get_account_balance(account_id, financial_account_id),
+        stripe_svc.get_financial_account_details(account_id, financial_account_id),
+        stripe_svc.list_transactions(account_id, financial_account_id, limit=10),
     )
 
     return {
@@ -107,42 +80,23 @@ async def refresh_application_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Poll Unit for direct or hosted-form KYC approval and finish setup."""
-    if current_user.unit_application_id and not current_user.unit_account_id:
+    """Poll Stripe for Connect account KYC/capability approval and finish setup."""
+    if current_user.stripe_account_id and not current_user.stripe_financial_account_id:
         try:
-            application = await unit_svc.get_application(current_user.unit_application_id)
-            await _finish_approved_application(current_user, application, db)
+            account = await stripe_svc.get_account(current_user.stripe_account_id)
+            await _finish_active_account(current_user, account, db)
         except Exception as e:
-            print(f"[Unit] refresh-application-status failed: {e}")
-
-    if (
-        not current_user.unit_account_id
-        and getattr(current_user, "unit_application_form_id", None)
-    ):
-        try:
-            form_response = await unit_svc.get_application_form(current_user.unit_application_form_id)
-            form_application = _application_from_form_response(form_response)
-            if form_application:
-                application_id = form_application.get("id")
-                current_user.unit_application_id = application_id
-                application = (
-                    form_application
-                    if form_application.get("relationships", {}).get("customer")
-                    else await unit_svc.get_application(application_id)
-                )
-                await _finish_approved_application(current_user, application, db)
-        except Exception as e:
-            print(f"[Unit] refresh hosted application form failed: {e}")
+            print(f"[Stripe] refresh-application-status failed: {e}")
 
     application_pending = bool(
-        getattr(current_user, "unit_application_id", None)
-        and not current_user.unit_account_id
+        getattr(current_user, "stripe_account_id", None)
+        and not current_user.stripe_financial_account_id
     )
 
     return {
-        "account_active": bool(current_user.unit_account_id),
+        "account_active": bool(current_user.stripe_financial_account_id),
         "application_pending": application_pending,
-        "unit_account_id": current_user.unit_account_id,
+        "stripe_financial_account_id": current_user.stripe_financial_account_id,
     }
 
 
@@ -151,35 +105,40 @@ async def activate_sandbox(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if "s.unit.sh" not in settings.unit_base_url:
+    if not (settings.stripe_secret_key or "").startswith("sk_test_"):
         raise HTTPException(
             status_code=403,
-            detail="Sandbox-only endpoint - refusing to run against a non-sandbox Unit environment.",
+            detail="Sandbox-only endpoint - refusing to run against a non-test-mode Stripe key.",
         )
 
-    if current_user.unit_account_id:
-        return {"account_active": True, "application_pending": False, "unit_account_id": current_user.unit_account_id}
+    if current_user.stripe_financial_account_id:
+        return {
+            "account_active": True,
+            "application_pending": False,
+            "stripe_financial_account_id": current_user.stripe_financial_account_id,
+        }
 
-    if not current_user.unit_application_id:
+    if not current_user.stripe_account_id:
         raise HTTPException(status_code=400, detail="No application on file - register first.")
 
     try:
-        await unit_svc.approve_application_sandbox(current_user.unit_application_id)
-        application = await unit_svc.get_application(current_user.unit_application_id)
-        relationships = application.get("relationships", {})
-        customer_data = relationships.get("customer", {}).get("data", {})
-        unit_customer_id = customer_data.get("id")
-        if not unit_customer_id:
-            raise HTTPException(status_code=502, detail="Unit approved the application but returned no customer id.")
-
-        current_user.unit_customer_id = unit_customer_id
-        account = await unit_svc.create_deposit_account(unit_customer_id)
-        current_user.unit_account_id = account["id"]
-        db.commit()
-        db.refresh(current_user)
+        # Stripe test mode has no manual "force-approve" simulator endpoint —
+        # test-mode Connect accounts activate automatically once required
+        # fields are present. Just poll current status here.
+        account = await stripe_svc.get_account(current_user.stripe_account_id)
+        await _finish_active_account(current_user, account, db)
+        if not current_user.stripe_financial_account_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Stripe account isn't active yet - complete the hosted onboarding form first.",
+            )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sandbox activation failed: {e}")
 
-    return {"account_active": True, "application_pending": False, "unit_account_id": current_user.unit_account_id}
+    return {
+        "account_active": True,
+        "application_pending": False,
+        "stripe_financial_account_id": current_user.stripe_financial_account_id,
+    }

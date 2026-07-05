@@ -18,13 +18,16 @@ class User(Base):
     school = Column(String, nullable=True)  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
     location = Column(String, nullable=True)  # user-entered city/campus location for local personalization
     military_status = Column(String, nullable=True)  # "none", "military_veteran_or_rotc", etc.
+    # KYC citizenship attestation captured at registration. FAWN banking (Stripe
+    # Treasury) is available to U.S. citizens only — this records that the user
+    # attested to citizenship before any SSN was submitted for KYC. The SSN
+    # itself is never stored (see routers/auth.py / services/stripe_baas.py).
+    is_us_citizen = Column(Boolean, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Unit identifiers — set after BaaS account creation
-    unit_customer_id = Column(String, nullable=True)
-    unit_account_id = Column(String, nullable=True)
-    unit_application_id = Column(String, nullable=True)  # set when KYC is pending review
-    unit_application_form_id = Column(String, nullable=True)  # set for hosted Unit application forms
+    # Stripe BaaS identifiers — set after Connect/Treasury account creation
+    stripe_account_id = Column(String, nullable=True)  # Connect Custom account id ("acct_..."), set on onboarding start
+    stripe_financial_account_id = Column(String, nullable=True)  # Treasury Financial Account id ("fa_..."), set once KYC + capabilities are active
 
     # Referral
     referral_code = Column(String, unique=True, nullable=True, index=True)
@@ -119,28 +122,28 @@ class DealSuggestion(Base):
 
 
 class Card(Base):
-    """Ownership record for a Unit virtual debit card.
+    """Ownership record for a Stripe Issuing virtual debit card.
 
-    Unit is the source of truth for card state (status, last4, etc.) —
+    Stripe is the source of truth for card state (status, last4, etc.) —
     this table only exists so we can cheaply verify "does this card
-    belong to this user" without an extra Unit API call on every request.
+    belong to this user" without an extra Stripe API call on every request.
     """
     __tablename__ = "cards"
 
     id = Column(String, primary_key=True, default=new_id)
     user_id = Column(String, nullable=False, index=True)
-    unit_card_id = Column(String, nullable=False, unique=True, index=True)
+    stripe_card_id = Column(String, nullable=False, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class FundingRequest(Base):
     """A request to pull money from an external bank account into a FAWN
-    deposit account via ACH (Unit's inline-counterparty ACH debit/Credit
-    direction — see services/unit.py).
+    Treasury Financial Account via ACH (Stripe Treasury Inbound Transfer —
+    see services/stripe_baas.py).
 
     The full external account/routing number is NEVER stored here — only
     the last 4 digits, for the user's own reference. The full numbers are
-    sent directly to Unit and discarded immediately after the API call,
+    sent directly to Stripe and discarded immediately after the API call,
     mirroring how SSN is handled in the registration flow.
     """
     __tablename__ = "funding_requests"
@@ -151,21 +154,11 @@ class FundingRequest(Base):
     status = Column(String, nullable=False, default="pending", index=True)  # pending | completed | failed
     external_account_last4 = Column(String, nullable=False)
     external_bank_name = Column(String, nullable=True)
-    unit_payment_id = Column(String, nullable=True)
+    stripe_inbound_transfer_id = Column(String, nullable=True)
     idempotency_key = Column(String, nullable=False, unique=True, index=True)
     error_message = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class UnitEvent(Base):
-    """Idempotency record — every processed Unit webhook event id is stored
-    here, mirroring StripeEvent's pattern."""
-    __tablename__ = "unit_events"
-
-    id = Column(String, primary_key=True)  # Unit event id
-    type = Column(String, nullable=False)
-    received_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Handle(Base):
@@ -192,7 +185,7 @@ class P2PTransfer(Base):
     asking from_user_id to pay). Splits are N of these rows sharing a
     group_id.
 
-    Every send is created in status="pending" and does NOT touch Unit
+    Every send is created in status="pending" and does NOT touch Stripe
     until POST /p2p/transfers/{id}/confirm is called — this is what
     forces the irreversible-action confirmation screen in the UI for
     every transfer, not just risky ones. Requests start in
@@ -221,7 +214,7 @@ class P2PTransfer(Base):
     related_transfer_id = Column(String, nullable=True, index=True)  # links a refund back to the original
 
     idempotency_key = Column(String, nullable=False, unique=True, index=True)
-    unit_book_payment_id = Column(String, nullable=True)
+    stripe_transfer_id = Column(String, nullable=True)
     error_message = Column(String, nullable=True)
 
     step_up_required = Column(Boolean, default=False, nullable=False)
@@ -234,7 +227,7 @@ class P2PTransfer(Base):
 class P2PDispute(Base):
     """A Reg E–style dispute filed against a completed transfer.
 
-    Money has already moved at Unit by the time a dispute is filed —
+    Money has already moved at Stripe by the time a dispute is filed —
     this is a claims/review layer on top, not an automatic reversal.
     Admin resolves manually via /admin/p2p/disputes/{id}/resolve, which
     if approved triggers a separate refund P2PTransfer.
@@ -245,7 +238,7 @@ class P2PDispute(Base):
     transfer_id = Column(String, nullable=False, index=True)
     # Canonical id of the underlying money movement this dispute covers.
     # A "request" row and the linked "send" row that fulfills it represent
-    # the SAME real Unit Book Payment (see pay_request/confirm_transfer in
+    # the SAME real Stripe Treasury transfer (see pay_request/confirm_transfer in
     # routers/p2p.py) — payment_id always resolves to the "send" row's id
     # so that disputing either row is recognized as disputing one payment.
     # Nullable for backward compatibility with rows created before this

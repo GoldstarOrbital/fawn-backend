@@ -17,9 +17,10 @@ class RegisterRequest(BaseModel):
     password: str
     full_name: str
     phone: str
-    date_of_birth: Optional[str] = None  # YYYY-MM-DD, passed to Unit when direct KYC is used
-    ssn: Optional[str] = None            # 9 digits, passed to Unit when direct KYC is used, NEVER stored
+    date_of_birth: Optional[str] = None  # YYYY-MM-DD, passed to Stripe when direct KYC is used
+    ssn: Optional[str] = None            # 9 digits, passed to Stripe when direct KYC is used, NEVER stored
     address: Optional[Address] = None
+    is_us_citizen: bool = False          # KYC eligibility attestation — FAWN banking is U.S.-citizens-only; required to submit an SSN/KYC payload
     is_student: bool = True
     occupation: str = "Student"
     school: Optional[str] = None  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
@@ -118,7 +119,7 @@ class UserResponse(BaseModel):
     military_status: Optional[str] = None
     account_active: Optional[bool] = None
     application_pending: Optional[bool] = None
-    unit_application_form_ready: Optional[bool] = None
+    stripe_onboarding_ready: Optional[bool] = None
 
     @classmethod
     def from_orm_user(cls, user):  # type: ignore[override]
@@ -130,16 +131,17 @@ class UserResponse(BaseModel):
             school=getattr(user, "school", None),
             location=getattr(user, "location", None),
             military_status=getattr(user, "military_status", None),
-            account_active=bool(user.unit_account_id),
+            account_active=bool(user.stripe_financial_account_id),
             application_pending=bool(
-                getattr(user, "unit_application_id", None) and not user.unit_account_id
+                getattr(user, "stripe_account_id", None) and not user.stripe_financial_account_id
             ),
-            unit_application_form_ready=not bool(user.unit_account_id),
+            stripe_onboarding_ready=not bool(user.stripe_financial_account_id),
         )
 
 
-class UnitApplicationFormPrefillResponse(BaseModel):
-    data: dict
+class StripeOnboardingResponse(BaseModel):
+    onboarding_url: str
+    stripe_account_id: str
 
 # --- Accounts ---
 

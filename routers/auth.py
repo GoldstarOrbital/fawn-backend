@@ -26,7 +26,7 @@ from schemas import (
 )
 from config import settings
 from dependencies import get_current_user
-from services import unit as unit_svc
+from services import stripe_baas as stripe_svc
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 limiter = Limiter(key_func=get_remote_address)
@@ -98,6 +98,25 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     if db.query(User).filter(func.lower(User.email) == req.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # FAWN banking (Stripe Treasury) is available to U.S. citizens only. When the
+    # caller submits a direct KYC payload (SSN/DOB/address), require an explicit
+    # citizenship attestation and a U.S. address BEFORE any SSN leaves this
+    # process for Stripe. Rejected up front so no partial user row is written and
+    # no SSN is ever forwarded. (The hosted flow — POST /stripe/onboarding with
+    # no SSN here — defers citizenship/eligibility to Stripe's own KYC.)
+    direct_kyc_payload = bool(req.ssn and req.date_of_birth and req.address)
+    if direct_kyc_payload:
+        if not req.is_us_citizen:
+            raise HTTPException(
+                status_code=403,
+                detail="FAWN accounts are currently available to U.S. citizens only.",
+            )
+        if (req.address.country or "").strip().upper() != "US":
+            raise HTTPException(
+                status_code=403,
+                detail="A U.S. address is required to open a FAWN account.",
+            )
+
     user = User(
         email=req.email,
         hashed_password=_hash(req.password),
@@ -107,19 +126,19 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
         school=req.school,
         location=req.location,
         military_status=req.military_status,
+        is_us_citizen=req.is_us_citizen,
     )
     db.add(user)
     db.flush()
 
-    # Submit direct KYC to Unit only when the caller provides the full
-    # sensitive payload. Production clients should prefer Unit's hosted
-    # application form via /unit/application-form-prefill so FAWN never
-    # handles SSNs directly.
-    unit_token_set = settings.unit_api_token not in ("UNIT_TOKEN_NOT_SET", "")
-    direct_kyc_payload = bool(req.ssn and req.date_of_birth and req.address)
-    if unit_token_set and direct_kyc_payload:
+    # Submit direct KYC to Stripe only when the caller provides the full
+    # sensitive payload. Production clients should prefer Stripe's hosted
+    # onboarding via POST /stripe/onboarding so FAWN never handles SSNs
+    # directly.
+    stripe_key_set = bool(settings.stripe_secret_key)
+    if stripe_key_set and direct_kyc_payload:
         try:
-            application = await unit_svc.create_application(
+            account = await stripe_svc.create_connect_account(
                 full_name=req.full_name,
                 email=req.email,
                 phone=req.phone,
@@ -128,23 +147,16 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
                 address=req.address,
                 occupation=req.occupation,
             )
-            app_status = application.get("attributes", {}).get("status", "pending")
-            app_id = application.get("id")
+            user.stripe_account_id = account.get("id")
 
-            if app_status == "approved":
-                relationships = application.get("relationships", {})
-                customer_data = relationships.get("customer", {}).get("data", {})
-                unit_customer_id = customer_data.get("id")
-                if unit_customer_id:
-                    user.unit_customer_id = unit_customer_id
-                    account = await unit_svc.create_deposit_account(unit_customer_id)
-                    user.unit_account_id = account["id"]
-            else:
-                # pending/manual — store application id so we can poll later
-                user.unit_application_id = app_id
+            if stripe_svc.account_is_active(account):
+                financial_account = await stripe_svc.create_financial_account(account["id"])
+                user.stripe_financial_account_id = financial_account["id"]
+            # else: pending capability review — account.updated webhook
+            # (routers/stripe_baas_webhook.py) finishes setup once approved.
 
         except Exception as e:
-            print(f"[Unit] KYC application failed: {e}")
+            print(f"[Stripe] KYC application failed: {e}")
             # Don't block registration — account creation will retry via webhook
 
     try:

@@ -4,9 +4,9 @@ step-up, idempotency, disputes.
 Users are created directly via the ORM rather than through the
 rate-limited /auth/register endpoint (registration itself is already
 covered by test_auth.py, and this file registers far more than 5 users
-per run, which would trip the "5/minute" limiter). UNIT_API_TOKEN is
+per run, which would trip the "5/minute" limiter). STRIPE_SECRET_KEY is
 unset in tests, so confirm logic monkeypatches
-services.unit.create_book_payment to avoid any real network call.
+services.stripe_baas.create_treasury_transfer to avoid any real network call.
 """
 import uuid
 
@@ -46,12 +46,13 @@ def _register(client, email, full_name="Test Student"):
     return token
 
 
-def _activate_account(email, unit_account_id=None):
-    """Simulate an approved Unit deposit account, bypassing real KYC."""
+def _activate_account(email, stripe_financial_account_id=None):
+    """Simulate an approved Stripe Treasury Financial Account, bypassing real KYC."""
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == email.lower()).first()
-        user.unit_account_id = unit_account_id or f"acc_{uuid.uuid4().hex[:10]}"
+        user.stripe_account_id = f"acct_{uuid.uuid4().hex[:10]}"
+        user.stripe_financial_account_id = stripe_financial_account_id or f"fa_{uuid.uuid4().hex[:10]}"
         db.commit()
         return user.id
     finally:
@@ -118,9 +119,9 @@ def two_active_users(client):
 
 
 def _mock_book_payment(monkeypatch, payment_id="pmt_test123"):
-    async def fake_create_book_payment(*args, **kwargs):
-        return {"id": payment_id, "type": "bookPayment"}
-    monkeypatch.setattr("routers.p2p.unit_svc.create_book_payment", fake_create_book_payment)
+    async def fake_create_treasury_transfer(*args, **kwargs):
+        return {"id": payment_id, "object": "treasury.outbound_payment"}
+    monkeypatch.setattr("routers.p2p.stripe_svc.create_treasury_transfer", fake_create_treasury_transfer)
 
 
 # --- Handles ---
@@ -554,7 +555,7 @@ def test_dispute_without_admin_key_403(client, two_active_users):
 def test_disputing_fulfilled_request_and_its_linked_send_is_treated_as_one_payment(client, two_active_users, monkeypatch, admin_key):
     """Regression test: a fulfilled 'request' row and the linked 'send' row
     it created both go to status='completed' and both represent the SAME
-    real Unit Book Payment. Disputing the request, then disputing the
+    real Stripe Treasury transfer. Disputing the request, then disputing the
     linked send, must be rejected as "already open" rather than allowing
     two independent disputes (and therefore two independent refunds) for
     one real transfer of funds.

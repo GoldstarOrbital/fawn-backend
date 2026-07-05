@@ -17,7 +17,7 @@ os.close(_TMP_DB_FD)
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DB_PATH}"
 os.environ["JWT_SECRET"] = "test_jwt_secret_for_pytest_only_not_real_1234567890"
 os.environ["ADMIN_API_KEY"] = "test-admin-key-12345"
-os.environ["UNIT_API_TOKEN"] = "UNIT_TOKEN_NOT_SET"  # keep Unit calls disabled in tests
+os.environ["STRIPE_SECRET_KEY"] = ""  # keep Stripe calls disabled in tests
 
 from fastapi.testclient import TestClient  # noqa: E402
 

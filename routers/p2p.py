@@ -1,10 +1,11 @@
 """Tier 1 P2P payments: handles, instant FAWN-to-FAWN sends, requests, splits.
 
-All sends move through Unit Book Payments — both accounts live at the same
-sponsor bank, so the transfer is a ledger move (sub-second, no external
-network). Every send is created in a non-final state and only touches Unit
-once the sender calls /confirm, which is what forces the irreversible-action
-confirmation screen client-side for every transfer, not just risky ones.
+All sends move through Stripe Treasury transfers — both accounts live on
+the same Stripe platform, so the transfer is a ledger move (near-instant,
+no external network). Every send is created in a non-final state and only
+touches Stripe once the sender calls /confirm, which is what forces the
+irreversible-action confirmation screen client-side for every transfer,
+not just risky ones.
 
 Risk controls (limits, step-up, scam warnings, idempotency, audit log,
 disputes) are designed in from the start per product spec — see the
@@ -29,7 +30,7 @@ from schemas import (
     P2PTransferOut, P2PTransferList, P2PDisputeRequest, P2PDisputeOut,
 )
 from dependencies import get_current_user
-from services import unit as unit_svc
+from services import stripe_baas as stripe_svc
 from services.external_send import get_external_send_provider
 from routers.admin import require_admin_key
 
@@ -72,7 +73,7 @@ def _resolve_handle(db: Session, handle: str) -> Optional[User]:
 
 
 def _require_active_account(user: User):
-    if not user.unit_account_id:
+    if not user.stripe_financial_account_id:
         raise HTTPException(status_code=400, detail="That account doesn't have an active FAWN bank account yet.")
 
 
@@ -272,17 +273,18 @@ async def confirm_transfer(request: Request, transfer_id: str, req: P2PConfirmRe
     _require_active_account(recipient)
 
     try:
-        payment = await unit_svc.create_book_payment(
-            sender_account_id=sender.unit_account_id,
-            recipient_account_id=recipient.unit_account_id,
+        payment = await stripe_svc.create_treasury_transfer(
+            sender_account_id=sender.stripe_account_id,
+            sender_financial_account_id=sender.stripe_financial_account_id,
+            recipient_financial_account_id=recipient.stripe_financial_account_id,
             amount_cents=transfer.amount_cents,
             description=transfer.note or f"FAWN P2P from @{transfer.from_handle}",
             idempotency_key=transfer.idempotency_key,
         )
-        transfer.unit_book_payment_id = payment["id"]
+        transfer.stripe_transfer_id = payment["id"]
         transfer.status = "completed"
         transfer.completed_at = datetime.now(timezone.utc)
-        _audit(db, transfer.id, current_user.id, "confirmed", {"unit_book_payment_id": payment["id"]})
+        _audit(db, transfer.id, current_user.id, "confirmed", {"stripe_transfer_id": payment["id"]})
 
         if transfer.source_request_id:
             src = db.query(P2PTransfer).filter(P2PTransfer.id == transfer.source_request_id).first()
@@ -519,7 +521,7 @@ async def create_external_transfer(current_user: User = Depends(get_current_user
     provider = get_external_send_provider()
     try:
         await provider.send(
-            sender_account_id=current_user.unit_account_id or "",
+            sender_account_id=current_user.stripe_financial_account_id or "",
             destination_account_number="",
             destination_routing_number="",
             amount_cents=0,
@@ -561,9 +563,10 @@ async def resolve_dispute(dispute_id: str, action: str, note: Optional[str] = No
         refund_key = f"refund:{payment_id}"
         already = db.query(P2PTransfer).filter(P2PTransfer.idempotency_key == refund_key).first()
         if not already:
-            payment = await unit_svc.create_book_payment(
-                sender_account_id=recipient.unit_account_id,
-                recipient_account_id=sender.unit_account_id,
+            payment = await stripe_svc.create_treasury_transfer(
+                sender_account_id=recipient.stripe_account_id,
+                sender_financial_account_id=recipient.stripe_financial_account_id,
+                recipient_financial_account_id=sender.stripe_financial_account_id,
                 amount_cents=transfer.amount_cents,
                 description=f"Dispute refund for transfer {transfer.id}",
                 idempotency_key=refund_key,
@@ -573,7 +576,7 @@ async def resolve_dispute(dispute_id: str, action: str, note: Optional[str] = No
                 from_user_id=recipient.id, to_user_id=sender.id,
                 from_handle=transfer.to_handle, to_handle=transfer.from_handle,
                 amount_cents=transfer.amount_cents, note="Dispute refund",
-                related_transfer_id=transfer.id, unit_book_payment_id=payment["id"],
+                related_transfer_id=transfer.id, stripe_transfer_id=payment["id"],
                 idempotency_key=refund_key, completed_at=datetime.now(timezone.utc),
             ))
         dispute.status = "refunded"

@@ -1,3 +1,7 @@
+> **SUPERSEDED:** written during the Unit era; FAWN's BaaS provider is now
+> Stripe (Connect + Treasury + Issuing), and `services/unit.py` has been
+> replaced by `services/stripe_baas.py`. Kept for historical record.
+
 # Task: Make services/unit.py resilient to Unit API failures
 
 ## Context

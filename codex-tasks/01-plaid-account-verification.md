@@ -1,3 +1,7 @@
+> **SUPERSEDED:** written during the Unit era; FAWN's BaaS provider is now
+> Stripe (Connect + Treasury + Issuing). Kept for historical record — see
+> `README.md` and `services/stripe_baas.py` for the live integration.
+
 # Task: Verify external bank account ownership before ACH funding
 
 ## Context

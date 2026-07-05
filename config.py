@@ -3,8 +3,6 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./fawn.db"
-    unit_api_token: str = "UNIT_TOKEN_NOT_SET"
-    unit_base_url: str = "https://api.s.unit.sh"
     anthropic_api_key: str = "ANTHROPIC_KEY_NOT_SET"
     jwt_secret: str = "dev_secret_change_in_production"
     jwt_algorithm: str = "HS256"
@@ -14,10 +12,12 @@ class Settings(BaseSettings):
     admin_api_key: str = ""
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
-    unit_webhook_secret: str = ""
+    stripe_baas_webhook_secret: str = ""
+    stripe_onboarding_refresh_url: str = "https://goldstarorbital.github.io/fawn-landing/dashboard.html"
+    stripe_onboarding_return_url: str = "https://goldstarorbital.github.io/fawn-landing/dashboard.html"
     allow_unverified_ach_funding: bool = False
     allow_unsigned_stripe_webhooks: bool = False
-    allow_unsigned_unit_webhooks: bool = False
+    allow_unsigned_baas_webhooks: bool = False
     allowed_origins: str = (
         "https://goldstarorbital.com,"
         "https://www.goldstarorbital.com,"

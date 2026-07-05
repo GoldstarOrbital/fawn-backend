@@ -1,5 +1,5 @@
 """Tests for /ai/money-review — the 10-prompts-in-one-button feature.
-All Anthropic/Unit calls are mocked."""
+All Anthropic/Stripe calls are mocked."""
 import uuid
 from datetime import datetime, timedelta
 
@@ -10,11 +10,13 @@ from models import User
 from config import settings
 
 
-def _make_user(email, unit_account_id=None):
+def _make_user(email, stripe_financial_account_id=None):
     db = SessionLocal()
     try:
         user = User(email=email.lower(), hashed_password="x", full_name="Review User",
-                    is_student=True, unit_account_id=unit_account_id)
+                    is_student=True,
+                    stripe_financial_account_id=stripe_financial_account_id,
+                    stripe_account_id="acct_review_test" if stripe_financial_account_id else None)
         db.add(user)
         db.commit()
         db.refresh(user)
@@ -45,16 +47,16 @@ def _mock_review(monkeypatch, review=FAKE_REVIEW):
     monkeypatch.setattr("routers.money_review.claude_svc.generate_money_review", fake_review)
 
 
-def _mock_unit_txns(monkeypatch, txns=FAKE_TXNS):
-    async def fake_list(account_id, limit=100):
+def _mock_stripe_txns(monkeypatch, txns=FAKE_TXNS):
+    async def fake_list(account_id, financial_account_id, limit=100):
         return txns
-    monkeypatch.setattr("routers.money_review.unit_svc.list_transactions", fake_list)
+    monkeypatch.setattr("routers.money_review.stripe_svc.list_transactions", fake_list)
 
 
 def test_review_with_account_data(client, monkeypatch):
     _mock_review(monkeypatch)
-    _mock_unit_txns(monkeypatch)
-    user_id = _make_user(f"rev_{uuid.uuid4().hex[:8]}@example.com", unit_account_id="acc_x")
+    _mock_stripe_txns(monkeypatch)
+    user_id = _make_user(f"rev_{uuid.uuid4().hex[:8]}@example.com", stripe_financial_account_id="fa_x")
 
     resp = client.post("/ai/money-review", json={"monthly_income_dollars": 1200, "goals": "save for a laptop"},
                        headers=_auth_for(user_id))
@@ -72,7 +74,7 @@ def test_review_with_account_data(client, monkeypatch):
 
 def test_review_pasted_data_mode_without_account(client, monkeypatch):
     _mock_review(monkeypatch)
-    user_id = _make_user(f"rev_{uuid.uuid4().hex[:8]}@example.com", unit_account_id=None)
+    user_id = _make_user(f"rev_{uuid.uuid4().hex[:8]}@example.com", stripe_financial_account_id=None)
     resp = client.post("/ai/money-review", json={"pasted_data": "rent 800, food 300, income 1400"},
                        headers=_auth_for(user_id))
     assert resp.status_code == 200
@@ -82,15 +84,15 @@ def test_review_pasted_data_mode_without_account(client, monkeypatch):
 
 def test_review_400_with_no_data_at_all(client, monkeypatch):
     _mock_review(monkeypatch)
-    user_id = _make_user(f"rev_{uuid.uuid4().hex[:8]}@example.com", unit_account_id=None)
+    user_id = _make_user(f"rev_{uuid.uuid4().hex[:8]}@example.com", stripe_financial_account_id=None)
     resp = client.post("/ai/money-review", json={}, headers=_auth_for(user_id))
     assert resp.status_code == 400
 
 
 def test_review_503_when_model_unavailable(client, monkeypatch):
     _mock_review(monkeypatch, review=None)
-    _mock_unit_txns(monkeypatch)
-    user_id = _make_user(f"rev_{uuid.uuid4().hex[:8]}@example.com", unit_account_id="acc_y")
+    _mock_stripe_txns(monkeypatch)
+    user_id = _make_user(f"rev_{uuid.uuid4().hex[:8]}@example.com", stripe_financial_account_id="fa_y")
     resp = client.post("/ai/money-review", json={}, headers=_auth_for(user_id))
     assert resp.status_code == 503
 

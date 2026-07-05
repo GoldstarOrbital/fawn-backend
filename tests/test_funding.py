@@ -1,5 +1,5 @@
-"""Tests for /funding — Add Funds via ACH (inline counterparty, pulls from
-an external bank account into the user's FAWN deposit account)."""
+"""Tests for /funding — Add Funds via ACH (Stripe Treasury Inbound Transfer,
+pulls from an external bank account into the user's FAWN Financial Account)."""
 import uuid
 from datetime import datetime, timedelta
 from jose import jwt
@@ -17,12 +17,14 @@ def _allow_unverified_ach_for_legacy_funding_tests(monkeypatch):
     monkeypatch.setattr(funding_router.limiter, "enabled", False, raising=False)
 
 
-def _create_active_user(email, unit_account_id="acc_funding_test"):
+def _create_active_user(email, stripe_financial_account_id="fa_funding_test", stripe_account_id="acct_funding_test"):
     db = SessionLocal()
     try:
         user = User(
             email=email.lower(), hashed_password="x", full_name="Funding Tester",
-            is_student=True, unit_account_id=unit_account_id,
+            is_student=True,
+            stripe_financial_account_id=stripe_financial_account_id,
+            stripe_account_id=stripe_account_id if stripe_financial_account_id else None,
         )
         db.add(user)
         db.commit()
@@ -52,14 +54,14 @@ def _valid_payload(amount_cents=10000, idempotency_key=None):
     }
 
 
-def _mock_unit_payment(monkeypatch, payment_id="pmt_funding_fake"):
+def _mock_stripe_inbound_transfer(monkeypatch, transfer_id="tr_funding_fake"):
     async def fake(**kwargs):
-        return {"id": payment_id, "type": "achPayment"}
-    monkeypatch.setattr("routers.funding.unit_svc.create_ach_funding_payment", fake)
+        return {"id": transfer_id, "object": "treasury.inbound_transfer"}
+    monkeypatch.setattr("routers.funding.stripe_svc.create_inbound_transfer", fake)
 
 
 def test_add_funds_without_active_account_400(client):
-    user_id = _create_active_user(f"noacct_{uuid.uuid4().hex[:8]}@example.com", unit_account_id=None)
+    user_id = _create_active_user(f"noacct_{uuid.uuid4().hex[:8]}@example.com", stripe_financial_account_id=None)
     resp = client.post("/funding/add-funds", json=_valid_payload(), headers=_auth(_token_for(user_id)))
     assert resp.status_code == 400
 
@@ -73,7 +75,7 @@ def test_add_funds_rejects_raw_bank_details_when_verification_gate_closed(client
 
 
 def test_add_funds_happy_path_never_stores_full_account_number(client, monkeypatch):
-    _mock_unit_payment(monkeypatch)
+    _mock_stripe_inbound_transfer(monkeypatch)
     user_id = _create_active_user(f"funder_{uuid.uuid4().hex[:8]}@example.com")
     token = _token_for(user_id)
 
@@ -94,7 +96,7 @@ def test_add_funds_happy_path_never_stores_full_account_number(client, monkeypat
 
 
 def test_duplicate_idempotency_key_returns_same_request(client, monkeypatch):
-    _mock_unit_payment(monkeypatch)
+    _mock_stripe_inbound_transfer(monkeypatch)
     user_id = _create_active_user(f"idem_{uuid.uuid4().hex[:8]}@example.com")
     token = _token_for(user_id)
     payload = _valid_payload(amount_cents=5000)
@@ -107,7 +109,7 @@ def test_duplicate_idempotency_key_returns_same_request(client, monkeypatch):
 
 
 def test_idempotency_key_replay_is_scoped_to_current_user(client, monkeypatch):
-    _mock_unit_payment(monkeypatch)
+    _mock_stripe_inbound_transfer(monkeypatch)
     user_a = _create_active_user(f"fund_a_{uuid.uuid4().hex[:8]}@example.com")
     user_b = _create_active_user(f"fund_b_{uuid.uuid4().hex[:8]}@example.com")
     key = f"funding-replay-{uuid.uuid4()}"
@@ -141,7 +143,7 @@ def test_per_request_limit_enforced(client):
 
 
 def test_daily_limit_enforced_across_multiple_requests(client, monkeypatch):
-    _mock_unit_payment(monkeypatch)
+    _mock_stripe_inbound_transfer(monkeypatch)
     user_id = _create_active_user(f"daily_{uuid.uuid4().hex[:8]}@example.com")
     token = _token_for(user_id)
 
@@ -165,10 +167,10 @@ def test_invalid_routing_number_rejected_422(client):
     assert resp.status_code == 422
 
 
-def test_unit_failure_marks_request_failed_not_silently_lost(client, monkeypatch):
+def test_stripe_failure_marks_request_failed_not_silently_lost(client, monkeypatch):
     async def fake_fail(**kwargs):
-        raise RuntimeError("simulated Unit outage")
-    monkeypatch.setattr("routers.funding.unit_svc.create_ach_funding_payment", fake_fail)
+        raise RuntimeError("simulated Stripe outage")
+    monkeypatch.setattr("routers.funding.stripe_svc.create_inbound_transfer", fake_fail)
 
     user_id = _create_active_user(f"failcase_{uuid.uuid4().hex[:8]}@example.com")
     resp = client.post("/funding/add-funds", json=_valid_payload(), headers=_auth(_token_for(user_id)))
@@ -179,11 +181,11 @@ def test_unit_failure_marks_request_failed_not_silently_lost(client, monkeypatch
     db.close()
     assert row is not None
     assert row.status == "failed"
-    assert "simulated Unit outage" in row.error_message
+    assert "simulated Stripe outage" in row.error_message
 
 
 def test_funding_history_lists_only_own_requests(client, monkeypatch):
-    _mock_unit_payment(monkeypatch)
+    _mock_stripe_inbound_transfer(monkeypatch)
     user_a = _create_active_user(f"usera_{uuid.uuid4().hex[:8]}@example.com")
     user_b = _create_active_user(f"userb_{uuid.uuid4().hex[:8]}@example.com")
 

@@ -25,6 +25,7 @@ def _register_payload(email="Test@Example.COM", password="supersecret1"):
         "school": "berkeley",
         "location": "Berkeley, CA",
         "military_status": "none",
+        "is_us_citizen": True,
     }
 
 
@@ -57,7 +58,66 @@ def test_duplicate_email_registration_fails_400(client):
     assert second.status_code == 400
 
 
-def test_register_without_sensitive_kyc_fields_for_hosted_unit_form(client):
+def test_register_with_ssn_but_not_us_citizen_is_rejected_403(client):
+    """FAWN banking is U.S.-citizens-only: submitting an SSN/KYC payload without
+    attesting citizenship must be refused before any SSN could reach Stripe, and
+    no user row may be created."""
+    payload = _register_payload(email="noncitizen@example.com")
+    payload["is_us_citizen"] = False
+
+    resp = client.post("/auth/register", json=payload)
+    assert resp.status_code == 403
+    assert "citizen" in resp.json()["detail"].lower()
+
+    # The rejected registration must not have created an account.
+    login_resp = client.post(
+        "/auth/login",
+        json={"email": "noncitizen@example.com", "password": "supersecret1"},
+    )
+    assert login_resp.status_code == 401
+
+
+def test_register_with_ssn_defaults_to_non_citizen_and_is_rejected_403(client):
+    """Omitting is_us_citizen entirely defaults to False — a KYC payload must not
+    slip through the citizenship gate just because the flag was left off."""
+    payload = _register_payload(email="missingflag@example.com")
+    payload.pop("is_us_citizen")
+
+    resp = client.post("/auth/register", json=payload)
+    assert resp.status_code == 403
+
+
+def test_register_citizen_with_non_us_address_is_rejected_403(client):
+    """A citizenship attestation with a non-U.S. address is contradictory and
+    can't open a Stripe Treasury account — reject before submitting KYC."""
+    payload = _register_payload(email="foreignaddr@example.com")
+    payload["is_us_citizen"] = True
+    payload["address"]["country"] = "CA"
+
+    resp = client.post("/auth/register", json=payload)
+    assert resp.status_code == 403
+    assert "u.s. address" in resp.json()["detail"].lower()
+
+
+def test_register_us_citizen_stores_attestation(client):
+    """A valid U.S.-citizen KYC registration succeeds and records the
+    attestation on the user for the compliance audit trail."""
+    from database import SessionLocal
+    from models import User
+
+    payload = _register_payload(email="citizen@example.com")
+    resp = client.post("/auth/register", json=payload)
+    assert resp.status_code == 201
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == "citizen@example.com").first()
+        assert user.is_us_citizen is True
+    finally:
+        db.close()
+
+
+def test_register_without_sensitive_kyc_fields_for_hosted_stripe_onboarding(client):
     payload = _register_payload(email="hostedkyc@example.com")
     payload.pop("ssn")
     payload.pop("date_of_birth")
@@ -72,7 +132,7 @@ def test_register_without_sensitive_kyc_fields_for_hosted_unit_form(client):
     body = me_resp.json()
     assert body["account_active"] is False
     assert body["application_pending"] is False
-    assert body["unit_application_form_ready"] is True
+    assert body["stripe_onboarding_ready"] is True
 
 
 def test_patch_me_updates_school(client):

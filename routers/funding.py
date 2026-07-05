@@ -1,15 +1,15 @@
 """Add Funds: pull money from an external bank account into a FAWN
-deposit account via ACH.
+Treasury Financial Account via ACH.
 
-Uses Unit's inline-counterparty ACH payment. Raw bank details are blocked
-by default because format validation does not prove that the caller owns
-the external account they entered. Only enable ALLOW_UNVERIFIED_ACH_FUNDING
-in local/sandbox development while building a Plaid, microdeposit, or
-Unit verified-counterparty flow.
+Uses a Stripe Treasury Inbound Transfer from a raw-entered bank account.
+Raw bank details are blocked by default because format validation does not
+prove that the caller owns the external account they entered. Only enable
+ALLOW_UNVERIFIED_ACH_FUNDING in local/sandbox development while building a
+Stripe Financial Connections, microdeposit, or verified-counterparty flow.
 
 ACH settles in days, not instantly, and can be returned by the sending
-bank — never treat a "completed" Unit API call here as final/irreversible
-the way a P2P Book Payment is.
+bank — never treat a "completed" Stripe API call here as final/irreversible
+the way a P2P Treasury transfer is.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -24,7 +24,7 @@ from database import get_db
 from models import User, FundingRequest, P2PAuditLog
 from schemas import AddFundsRequest, FundingRequestOut, FundingRequestList
 from dependencies import get_current_user
-from services import unit as unit_svc
+from services import stripe_baas as stripe_svc
 from config import settings
 
 router = APIRouter(prefix="/funding", tags=["funding"])
@@ -61,7 +61,7 @@ def _check_limits(db: Session, user_id: str, amount_cents: int):
 @router.post("/add-funds", response_model=FundingRequestOut, status_code=201)
 @limiter.limit("10/minute")
 async def add_funds(request: Request, req: AddFundsRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not current_user.unit_account_id:
+    if not current_user.stripe_financial_account_id:
         raise HTTPException(status_code=400, detail="You need an active FAWN bank account before you can add funds.")
     if not settings.allow_unverified_ach_funding:
         raise HTTPException(
@@ -95,8 +95,9 @@ async def add_funds(request: Request, req: AddFundsRequest, current_user: User =
     ))
 
     try:
-        payment = await unit_svc.create_ach_funding_payment(
-            unit_account_id=current_user.unit_account_id,
+        payment = await stripe_svc.create_inbound_transfer(
+            account_id=current_user.stripe_account_id,
+            financial_account_id=current_user.stripe_financial_account_id,
             routing_number=req.routing_number,
             account_number=req.account_number,
             account_type=req.account_type,
@@ -104,12 +105,12 @@ async def add_funds(request: Request, req: AddFundsRequest, current_user: User =
             amount_cents=req.amount_cents,
             idempotency_key=req.idempotency_key,
         )
-        funding.unit_payment_id = payment["id"]
+        funding.stripe_inbound_transfer_id = payment["id"]
         funding.status = "completed"  # "completed" = the ACH pull was successfully initiated, not that funds have settled
         funding.completed_at = datetime.now(timezone.utc)
         db.add(P2PAuditLog(
             transfer_id=funding.id, user_id=current_user.id, event_type="funding_initiated",
-            metadata_json=json.dumps({"unit_payment_id": payment["id"]}),
+            metadata_json=json.dumps({"stripe_inbound_transfer_id": payment["id"]}),
         ))
     except Exception as e:
         funding.status = "failed"

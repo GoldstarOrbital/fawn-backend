@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from models import User
 from schemas import TransactionList
 from dependencies import get_current_user
-from services import unit as unit_svc
+from services import stripe_baas as stripe_svc
 from services.categorize import categorize
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -13,10 +13,10 @@ async def list_transactions(
     limit: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
 ):
-    if not current_user.unit_account_id:
+    if not current_user.stripe_financial_account_id:
         raise HTTPException(status_code=404, detail="No bank account linked yet.")
 
-    txns = await unit_svc.list_transactions(current_user.unit_account_id, limit=limit)
+    txns = await stripe_svc.list_transactions(current_user.stripe_account_id, current_user.stripe_financial_account_id, limit=limit)
 
     # Attach category + emoji to each transaction
     for t in txns:
@@ -30,10 +30,10 @@ async def list_transactions(
 @router.get("/summary")
 async def spending_summary(current_user: User = Depends(get_current_user)):
     """Return spending totals grouped by category for the last 100 transactions."""
-    if not current_user.unit_account_id:
+    if not current_user.stripe_financial_account_id:
         raise HTTPException(status_code=404, detail="No bank account linked yet.")
 
-    txns = await unit_svc.list_transactions(current_user.unit_account_id, limit=100)
+    txns = await stripe_svc.list_transactions(current_user.stripe_account_id, current_user.stripe_financial_account_id, limit=100)
     totals: dict[str, dict] = {}
 
     for t in txns:

@@ -1,4 +1,10 @@
-# Codex tasks — Unit BaaS integration push
+> **SUPERSEDED (this migration):** FAWN's BaaS provider moved from Unit to
+> Stripe (Connect + Treasury + Issuing). Everything below is historical —
+> it describes the Unit-era integration and is kept for the record, not as
+> current instructions. See `README.md` and `services/stripe_baas.py` for
+> the live Stripe integration.
+
+# Codex tasks — Unit BaaS integration push (historical, superseded by Stripe)
 
 Four independent, scoped prompts for Codex. Each file is self-contained —
 paste its whole content as the task prompt. They don't depend on each other

@@ -1,4 +1,9 @@
-# Task: Unit sandbox-to-production cutover runbook + config audit
+> **SUPERSEDED:** written during the Unit era; FAWN's BaaS provider is now
+> Stripe (Connect + Treasury + Issuing), selected via `STRIPE_SECRET_KEY`
+> test/live mode rather than a separate base-URL setting. Kept for
+> historical record — see `README.md` for the current cutover notes.
+
+# Task: Unit sandbox-to-production cutover runbook + config audit (historical)
 
 ## Context
 

@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, stripe_baas_webhook, funding, stripe_onboarding, podcast, money_review
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -77,11 +77,12 @@ def _init_db_schema():
         _patch("users", "referral_count", "referral_count INTEGER DEFAULT 0 NOT NULL")
         _patch("users", "phone", "phone VARCHAR")
         _patch("users", "is_student", "is_student BOOLEAN DEFAULT FALSE")
-        _patch("users", "unit_application_id", "unit_application_id VARCHAR")
-        _patch("users", "unit_application_form_id", "unit_application_form_id VARCHAR")
+        _patch("users", "stripe_account_id", "stripe_account_id VARCHAR")
+        _patch("users", "stripe_financial_account_id", "stripe_financial_account_id VARCHAR")
         _patch("users", "school", "school VARCHAR")
         _patch("users", "location", "location VARCHAR")
         _patch("users", "military_status", "military_status VARCHAR")
+        _patch("users", "is_us_citizen", "is_us_citizen BOOLEAN")
 
         # p2p_disputes columns added after initial schema
         _patch("p2p_disputes", "payment_id", "payment_id VARCHAR")
@@ -153,9 +154,9 @@ app.include_router(member.router)
 app.include_router(deals.router)
 app.include_router(p2p.router)
 app.include_router(cards.router)
-app.include_router(unit_webhook.router)
+app.include_router(stripe_baas_webhook.router)
 app.include_router(funding.router)
-app.include_router(unit_onboarding.router)
+app.include_router(stripe_onboarding.router)
 app.include_router(podcast.router)
 app.include_router(money_review.router)
 
@@ -197,7 +198,7 @@ def health():
 
 @app.get("/status")
 def status():
-    """Operational status: uptime, db connectivity, Unit API reachability, version."""
+    """Operational status: uptime, db connectivity, Stripe API reachability, version."""
     # DB check
     db_ok = False
     try:
@@ -208,26 +209,26 @@ def status():
     except Exception:
         pass
 
-    # Unit API reachability â€” attempt a connection; any HTTP response means the host is up
-    unit_ok = False
+    # Stripe API reachability â€” attempt a connection; any HTTP response means the host is up
+    stripe_ok = False
     try:
         import urllib.request
         import urllib.error
         req = urllib.request.Request(
-            f"{settings.unit_base_url}/",
+            "https://api.stripe.com/",
             method="HEAD",
         )
         req.add_header("User-Agent", "fawn-status-check/1.0")
         try:
             urllib.request.urlopen(req, timeout=3)
-            unit_ok = True
+            stripe_ok = True
         except urllib.error.HTTPError:
             # Got an HTTP error response â€” host is reachable
-            unit_ok = True
+            stripe_ok = True
         except urllib.error.URLError:
-            unit_ok = False
+            stripe_ok = False
     except Exception:
-        unit_ok = False
+        stripe_ok = False
 
     uptime_seconds = round(time.time() - _START_TIME, 1)
 
@@ -235,6 +236,5 @@ def status():
         "version": "0.2.0",
         "uptime_seconds": uptime_seconds,
         "db_ok": db_ok,
-        "unit_api_reachable": unit_ok,
-        "unit_base_url": settings.unit_base_url,
+        "stripe_api_reachable": stripe_ok,
     }
