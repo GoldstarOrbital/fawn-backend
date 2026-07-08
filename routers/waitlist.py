@@ -4,19 +4,17 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 import os
 import httpx
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from database import get_db
 from models import WaitlistEntry, EmailLog
 from config import settings
 from services.analytics import capture, EVENTS
+from rate_limiting import limiter
 
 WELCOME_EMAIL_NUMBER = 1  # EmailLog marker — distinguishes the immediate
                           # welcome email from the day-3+ nurture sequence (#2-#5)
 
 router = APIRouter(prefix="/waitlist", tags=["waitlist"])
-limiter = Limiter(key_func=get_remote_address)
 
 
 class WaitlistJoin(BaseModel):

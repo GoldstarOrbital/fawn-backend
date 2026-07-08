@@ -21,16 +21,14 @@ from jose import jwt as pyjwt, JWTError, ExpiredSignatureError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from database import get_db
 from models import FoundingMember, MagicLinkToken
 from config import settings
 from services.analytics import capture, EVENTS
+from rate_limiting import limiter
 
 router = APIRouter(prefix="/member", tags=["member"])
-limiter = Limiter(key_func=get_remote_address)
 
 FAWN_FROM = f"FAWN <{settings.from_email}>"
 DASHBOARD_BASE = "https://goldstarorbital.github.io/fawn-landing/member.html"

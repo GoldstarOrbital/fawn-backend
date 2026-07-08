@@ -7,17 +7,15 @@ which is out of scope until there's an actual need for it.
 """
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from database import get_db
 from models import User, Card
 from schemas import CardOut, CardList, CardFreezeRequest
 from dependencies import get_current_user
 from services import unit as unit_svc
+from rate_limiting import limiter
 
 router = APIRouter(prefix="/cards", tags=["cards"])
-limiter = Limiter(key_func=get_remote_address)
 
 
 def _to_out(summary: dict) -> CardOut:

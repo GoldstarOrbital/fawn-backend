@@ -15,8 +15,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -25,9 +23,9 @@ from models import User
 from services import claude as claude_svc
 from services import unit as unit_svc
 from services.categorize import categorize
+from rate_limiting import limiter
 
 router = APIRouter(prefix="/ai", tags=["ai"])
-limiter = Limiter(key_func=get_remote_address)
 
 DISCLAIMER = (
     "AI-generated budgeting analysis based on your transaction data. "

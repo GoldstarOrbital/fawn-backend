@@ -27,15 +27,13 @@ from fastapi import APIRouter, Depends, HTTPException, Security, Request, status
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.orm import Session
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from database import get_db
 from models import DealSuggestion
 from services.analytics import capture, EVENTS
+from rate_limiting import limiter
 
 router = APIRouter(prefix="/deals", tags=["deals"])
-limiter = Limiter(key_func=get_remote_address)
 
 API_KEY_HEADER = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 

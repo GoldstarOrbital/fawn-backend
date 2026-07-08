@@ -17,6 +17,7 @@ from dependencies import get_current_user_id
 from services import crypto_wallet
 from services.analytics import capture, EVENTS
 from rate_limiting import limiter, RATE_LIMITS
+from config import settings
 import re
 
 router = APIRouter(prefix="/wallet", tags=["crypto"])
@@ -264,12 +265,15 @@ async def export_user_data(
         ],
     }
 
-    # SECURITY: Log this export (audit trail)
+    # SECURITY: Log this export (audit trail, 7-year retention)
     from models import UserAuditLog
+    from datetime import datetime, timedelta, timezone
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
     audit_entry = UserAuditLog(
         user_id=user_id,
         action="export_data",
         details=json.dumps({"export_size_bytes": len(json.dumps(data))}),
+        retention_expires_at=retention_expires,
     )
     db.add(audit_entry)
     db.commit()
@@ -301,11 +305,14 @@ async def request_account_deletion(
     user.hashed_password = ""  # prevent login
     user.wallet_initialized = False  # prevent wallet access
 
-    # Log deletion request (audit trail)
+    # Log deletion request (audit trail, 7-year retention)
+    from datetime import datetime, timedelta, timezone
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
     audit_entry = UserAuditLog(
         user_id=user_id,
         action="account_deletion_requested",
         details=json.dumps({"reason": "user_requested"}),
+        retention_expires_at=retention_expires,
     )
     db.add(audit_entry)
     db.commit()
@@ -321,16 +328,21 @@ admin_router = APIRouter(prefix="/fees", tags=["admin"])
 @limiter.limit(RATE_LIMITS["fees_collect"])
 async def collect_fees(
     request: Request,
-    user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     """
     [ADMIN ONLY] Collect platform fees to treasury wallet.
 
-    In production: requires admin key + triggers on-chain sweep.
-    For MVP: just aggregates and logs fees.
+    Requires X-Admin-Key header for authentication.
+    In production: triggers on-chain sweep to treasury.
     """
-    # TODO: add admin key check
+    admin_key = request.headers.get("X-Admin-Key", "")
+    if not admin_key or admin_key != settings.admin_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing admin key"
+        )
+
     result = await crypto_wallet.collect_fees(db)
     capture(EVENTS["FEES_COLLECTED"], "admin", {"total_cents": result["total_fees"]})
     return result

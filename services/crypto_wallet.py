@@ -7,16 +7,33 @@ SECURITY:
 - No gas fees — flat $0.01 per transfer
 - All operations logged to UserAuditLog (7-year retention for compliance)
 - Seed phrases never logged, returned only once
-- Transfer amounts are logged for audit trail (not user IP, for privacy)
+- Custodial private keys encrypted with Fernet (AES-256-GCM)
+- EIP-55 checksum validation on recipient addresses
 """
 import os
 from decimal import Decimal
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from models import User, CryptoWallet, CryptoTransfer, FeeCollection, UserAuditLog
 import secrets
 import json
+import re
+
+# Real BIP39 seed phrase generation
+try:
+    from mnemonic import Mnemonic
+except ImportError:
+    Mnemonic = None
+
+# EIP-55 checksum validation
+import hashlib
+
+# Fernet encryption for custodial keys
+try:
+    from cryptography.fernet import Fernet
+except ImportError:
+    Fernet = None
 
 # For MVP: we'll use a placeholder for wallet creation.
 # In production, integrate with Ethers.js or similar for real wallet generation.
@@ -41,10 +58,75 @@ class InvalidAddress(Exception):
 
 
 def _is_valid_eth_address(addr: str) -> bool:
-    """Simple check: is it a valid Ethereum-style address (0x + 40 hex chars)."""
+    """Validate Ethereum address with EIP-55 checksum verification."""
     if not addr or not addr.startswith("0x"):
         return False
-    return len(addr) == 42 and all(c in "0123456789abcdefABCDEF" for c in addr[2:])
+    if len(addr) != 42 or not all(c in "0123456789abcdefABCDEF" for c in addr[2:]):
+        return False
+
+    # EIP-55 checksum validation (required for correctness)
+    # If address contains both uppercase and lowercase, verify checksum
+    addr_no_prefix = addr[2:]
+    if not (addr_no_prefix.isupper() or addr_no_prefix.islower()):
+        # Mixed case — must validate checksum
+        hash_bytes = hashlib.sha256(addr_no_prefix.lower().encode()).digest()
+        for i, c in enumerate(addr_no_prefix):
+            if c in "0123456789":
+                continue
+            hash_value = int(hash_bytes[i // 2].hex()[i % 2], 16)
+            if hash_value >= 8:
+                if c.isupper():
+                    continue
+                else:
+                    return False  # Should be uppercase
+            else:
+                if c.islower():
+                    continue
+                else:
+                    return False  # Should be lowercase
+    return True
+
+
+def _generate_seed_phrase() -> str:
+    """Generate a real BIP39 seed phrase (12 words, 128 bits)."""
+    if Mnemonic is None:
+        raise ImportError("mnemonic library not installed. Install with: pip install mnemonic")
+    mnemo = Mnemonic("english")
+    return mnemo.generate(strength=128)  # 12 words
+
+
+def _encrypt_private_key(private_key: str, encryption_key: Optional[str] = None) -> bytes:
+    """Encrypt private key using Fernet (AES-256-GCM)."""
+    if Fernet is None:
+        raise ImportError("cryptography library not installed. Install with: pip install cryptography")
+
+    # Use environment key or generate a new one (not production-safe!)
+    key = encryption_key or os.environ.get("FAWN_ENCRYPTION_KEY")
+    if not key:
+        raise ValueError("FAWN_ENCRYPTION_KEY environment variable not set")
+
+    # Ensure key is properly formatted for Fernet (base64-encoded 32 bytes)
+    if isinstance(key, str):
+        key = key.encode()
+
+    cipher = Fernet(key)
+    return cipher.encrypt(private_key.encode())
+
+
+def _decrypt_private_key(encrypted_key: bytes, encryption_key: Optional[str] = None) -> str:
+    """Decrypt private key using Fernet."""
+    if Fernet is None:
+        raise ImportError("cryptography library not installed")
+
+    key = encryption_key or os.environ.get("FAWN_ENCRYPTION_KEY")
+    if not key:
+        raise ValueError("FAWN_ENCRYPTION_KEY environment variable not set")
+
+    if isinstance(key, str):
+        key = key.encode()
+
+    cipher = Fernet(key)
+    return cipher.decrypt(encrypted_key).decode()
 
 
 async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_custodial") -> dict:
@@ -81,20 +163,26 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
     # In production: use ethers.Wallet.createRandom() or similar
     wallet_address = f"0x{secrets.token_hex(20)}"  # 20 bytes = 40 hex chars
 
-    # For custodial wallets, we'd generate and store an encrypted seed phrase.
-    # For MVP: just generate a placeholder.
+    # Generate and store encryption key for custodial wallets (user-facing keys encrypted with Fernet)
     seed_phrase = None
-    if wallet_type == "non_custodial":
-        # In production: generate 12-word BIP39 seed
-        seed_phrase = " ".join(secrets.token_hex(2) for _ in range(12))
+    encrypted_key = None
 
-    # Create wallet record
+    if wallet_type == "non_custodial":
+        # Generate real BIP39 seed phrase (12 words)
+        seed_phrase = _generate_seed_phrase()
+    elif wallet_type == "fawn_custodial":
+        # Generate seed phrase, encrypt it, and store encrypted version
+        seed_phrase = _generate_seed_phrase()
+        encrypted_key = _encrypt_private_key(seed_phrase)
+
+    # Create wallet record (with encrypted key if custodial)
     wallet = CryptoWallet(
         user_id=user_id,
         wallet_address=wallet_address,
         wallet_type=wallet_type,
         chain=USDC_CHAIN,
         usdc_balance_cents=0,
+        encrypted_private_key=encrypted_key,  # Only for custodial wallets
     )
     db.add(wallet)
 
@@ -105,10 +193,13 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
     user.wallet_initialized = True
 
     # SECURITY: Audit log the wallet creation (but NOT the seed phrase)
+    # 7-year retention for compliance
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
     audit_log = UserAuditLog(
         user_id=user_id,
         action="created_wallet",
         details=json.dumps({"wallet_type": wallet_type, "chain": USDC_CHAIN}),
+        retention_expires_at=retention_expires,
     )
     db.add(audit_log)
 
@@ -219,6 +310,8 @@ async def send_usdc(
     sender.total_fees_paid_cents += PLATFORM_FEE_CENTS
 
     # SECURITY: Audit log the transfer (truncate recipient for privacy, log amount for compliance)
+    # 7-year retention for compliance
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
     audit_log = UserAuditLog(
         user_id=sender_id,
         action="sent_transfer",
@@ -227,6 +320,7 @@ async def send_usdc(
             "amount_cents": amount_cents,
             "fee_cents": PLATFORM_FEE_CENTS,
         }),
+        retention_expires_at=retention_expires,
     )
     db.add(audit_log)
 

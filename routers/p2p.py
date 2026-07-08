@@ -18,8 +18,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from database import get_db
 from models import User, Handle, P2PTransfer, P2PDispute, P2PAuditLog, new_id
@@ -32,9 +30,9 @@ from dependencies import get_current_user
 from services import unit as unit_svc
 from services.external_send import get_external_send_provider
 from routers.admin import require_admin_key
+from rate_limiting import limiter
 
 router = APIRouter(prefix="/p2p", tags=["p2p"])
-limiter = Limiter(key_func=get_remote_address)
 
 # --- Risk controls (MVP constants; promote to a per-user DB table once we
 #     have real usage data to tune against) ---

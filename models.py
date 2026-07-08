@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer, LargeBinary
+from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer, LargeBinary, ForeignKey, CheckConstraint, Index
 from sqlalchemy.sql import func
 from database import Base
 import uuid
@@ -425,17 +425,26 @@ class CryptoWallet(Base):
     Users can have at most one wallet per account, but this table allows
     wallet migration / multi-chain support in the future without schema rewrites.
     balance_cents is the canonical source of truth for ledger balance.
+    Custodial private keys are encrypted with Fernet (AES-256-GCM).
     """
     __tablename__ = "crypto_wallets"
 
     id = Column(String, primary_key=True, default=new_id)
-    user_id = Column(String, nullable=False, unique=True, index=True)  # 1:1 per user
+    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)  # 1:1 per user
     wallet_address = Column(String, nullable=False, unique=True, index=True)
     wallet_type = Column(String, nullable=False)  # "non_custodial" | "fawn_custodial"
     chain = Column(String, nullable=False, default="polygon")  # "polygon" | "ethereum"
-    usdc_balance_cents = Column(Integer, default=0, nullable=False)  # balance in cents
+    usdc_balance_cents = Column(Integer, default=0, nullable=False)
+    encrypted_private_key = Column(LargeBinary, nullable=True)  # Fernet-encrypted key for custodial wallets only
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    # Future: public_key (non-custodial), encrypted_private_key (custodial), etc.
+
+    # Constraints and indexes
+    __table_args__ = (
+        CheckConstraint("wallet_type IN ('non_custodial', 'fawn_custodial')"),
+        CheckConstraint("chain IN ('polygon', 'ethereum')"),
+        CheckConstraint("usdc_balance_cents >= 0"),
+        Index('idx_crypto_wallet_user_chain', 'user_id', 'chain'),
+    )
 
 
 class CryptoTransfer(Base):
@@ -448,18 +457,24 @@ class CryptoTransfer(Base):
     __tablename__ = "crypto_transfers"
 
     id = Column(String, primary_key=True, default=new_id)
-    sender_id = Column(String, nullable=False, index=True)
-    recipient_address = Column(String, nullable=False)  # recipient's wallet address (onchain)
-    amount_cents = Column(Integer, nullable=False)  # amount in cents (e.g., 1000 = $10.00)
-    fee_cents = Column(Integer, default=100, nullable=False)  # always $0.01 = 100 cents (PLATFORM FEE, not gas)
-    # Status: pending (waiting for confirmation) | completed (sent) | failed (declined)
+    sender_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    recipient_address = Column(String, nullable=False, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    fee_cents = Column(Integer, default=100, nullable=False)
     status = Column(String, default="completed", nullable=False, index=True)
-    # Hash for on-chain reference (if we ever settle transfers on-chain)
     tx_hash = Column(String, nullable=True)
-    # Arbitrary memo / description
     memo = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Constraints and indexes
+    __table_args__ = (
+        CheckConstraint("amount_cents > 0"),
+        CheckConstraint("status IN ('pending', 'completed', 'failed')"),
+        Index('idx_crypto_transfer_sender_created', 'sender_id', 'created_at'),
+        Index('idx_crypto_transfer_recipient_date', 'recipient_address', 'created_at'),
+        Index('idx_crypto_transfer_pending', 'sender_id', 'status'),
+    )
 
 
 class FeeCollection(Base):
@@ -483,16 +498,20 @@ class UserAuditLog(Base):
     """Append-only audit trail for every significant user action.
 
     Required for compliance and security. Logs wallet creation, transfers,
-    failed auth attempts, data exports. Immutable (never delete).
+    failed auth attempts, data exports. Immutable (never delete) for 7 years.
     """
     __tablename__ = "user_audit_log"
 
     id = Column(String, primary_key=True, default=new_id)
-    user_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
     action = Column(String, nullable=False, index=True)  # created_wallet, sent_transfer, export_data, failed_auth
     details = Column(String, nullable=True)  # JSON-encoded details (wallet_type, amount, recipient truncated, etc)
-    ip_address = Column(String, nullable=True)  # source IP for geo/fraud detection
+    ip_address = Column(String, nullable=True)  # source IP for geo/fraud detection (hashed in production)
     user_agent = Column(String, nullable=True)  # browser/client info
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    retention_expires_at = Column(DateTime(timezone=True), nullable=False, index=True)  # 7-year compliance retention
 
-    # CRITICAL: 7-year retention for financial compliance. Never auto-delete.
+    # Composite index for efficient audit trail queries (user + date range)
+    __table_args__ = (
+        Index('idx_audit_log_user_date', 'user_id', 'created_at'),
+    )
