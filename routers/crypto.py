@@ -157,8 +157,16 @@ async def create_wallet(
         # SECURITY: Log creation (for audit trail) but don't log seed phrase
         return result
     except ValueError as e:
+        import traceback
+        print(f"[wallet] ValueError creating wallet for {user_id}: {e}")
+        traceback.print_exc()
         # SECURITY: Don't leak whether user already has wallet or other details
         raise HTTPException(status_code=400, detail="Could not create wallet")
+    except Exception as e:
+        import traceback
+        print(f"[wallet] Exception creating wallet for {user_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Wallet error: {str(e)[:100]}")
 
 
 @router.get("/balance", response_model=BalanceResponse)
