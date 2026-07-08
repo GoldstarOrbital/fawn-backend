@@ -158,10 +158,11 @@ async def create_wallet(
         return result
     except ValueError as e:
         import traceback
-        print(f"[wallet] ValueError creating wallet for {user_id}: {e}")
+        error_msg = str(e)
+        print(f"[wallet] ValueError creating wallet for {user_id}: {error_msg}")
         traceback.print_exc()
-        # SECURITY: Don't leak whether user already has wallet or other details
-        raise HTTPException(status_code=400, detail="Could not create wallet")
+        # Return more specific error messages for debugging
+        raise HTTPException(status_code=400, detail=error_msg)
     except Exception as e:
         import traceback
         print(f"[wallet] Exception creating wallet for {user_id}: {e}")
