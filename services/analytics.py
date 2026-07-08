@@ -34,6 +34,11 @@ EVENTS = {
     "WALLET_CREATED": "wallet_created",
     "TRANSFER_SENT": "transfer_sent",
     "FEES_COLLECTED": "fees_collected",
+    # Investing events
+    "investing_order_placed": "investing_order_placed",
+    "investing_order_failed": "investing_order_failed",
+    "investing_watchlist_add": "investing_watchlist_add",
+    "investing_watchlist_delete": "investing_watchlist_delete",
 }
 
 

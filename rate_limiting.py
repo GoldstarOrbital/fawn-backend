@@ -30,4 +30,12 @@ RATE_LIMITS = {
 
     # Admin operations
     "fees_collect": "6/hour",  # Fee collection max 6x per hour (every 10 min)
+
+    # Investing operations
+    "investing_quote": "120/minute",  # Quote lookups are safe (frequent OK)
+    "investing_place_order": "50/hour",  # Max 50 trades per hour per user (aggressive for students)
+    "investing_watchlist_add": "100/hour",  # Watchlist saves are cheap
+    "investing_watchlist_delete": "100/hour",  # Watchlist deletes are cheap
+    "investing_positions": "60/minute",  # Position reads are safe
+    "investing_orders": "60/minute",  # Order history reads are safe
 }

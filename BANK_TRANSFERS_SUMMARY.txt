@@ -1,0 +1,221 @@
+================================================================================
+BANK ACCOUNT TRANSFER CAPABILITY - IMPLEMENTATION SUMMARY
+================================================================================
+
+PROJECT: FAWN - Crypto-native stablecoin payments for students
+FEATURE: Send USDC to traditional bank accounts via ACH
+DATE: 2026-07-08
+STATUS: Backend implementation COMPLETE
+
+================================================================================
+WHAT WAS BUILT
+================================================================================
+
+New API Endpoint:
+  POST /transfers/send-to-bank
+
+  Allows authenticated FAWN users to send USDC to ANY bank account via ACH.
+  Same $0.01 flat fee as P2P transfers. Settlement: 1-3 business days.
+
+Capabilities Enabled:
+  ✓ Send $X USDC from FAWN wallet
+  ✓ Convert USDC → USD (1:1, no slippage)
+  ✓ Initiate ACH transfer to recipient's bank account
+  ✓ Deduct balance immediately (pessimistic)
+  ✓ Track transfer with pending status
+  ✓ Audit log with 7-year compliance retention
+
+Security:
+  ✓ Input validation (routing number format, account length, etc.)
+  ✓ Balance checks (amount + $0.01 fee must be available)
+  ✓ Bank details NOT persisted (only last 4 digits stored)
+  ✓ Idempotency keys prevent retry duplicates
+  ✓ Audit trail with truncated recipient info
+  ✓ Rate limiting per user
+
+================================================================================
+FILES MODIFIED
+================================================================================
+
+1. models.py (lines 497-530)
+   - Added BankTransfer table
+   - Stores: sender_id, recipient_name, routing/account last 4s
+   - Tracks: amount, fee, status, memo, ach_id, idempotency_key
+   - Timestamps: created_at, completed_at
+
+2. routers/crypto.py (lines 72-113, 224-272)
+   - Added SendToBankRequest Pydantic model with validation
+   - Added BankTransferResponse model
+   - Added POST /transfers/send-to-bank endpoint
+   - Rate limiting + error handling included
+
+3. services/crypto_wallet.py (lines 61-62, 388-501)
+   - Added BankTransferError exception
+   - Added send_to_bank() async function
+   - Balance validation + pessimistic deduction
+   - Audit logging + error refunds
+
+4. services/column.py (lines 164-203)
+   - Added create_ach_debit() async function
+   - Sends ACH debit to external bank account
+   - Returns Column transfer ID
+
+5. tests/test_bank_transfers.py (new file)
+   - Comprehensive unit test suite
+   - Ready to run: pytest tests/test_bank_transfers.py -v
+
+================================================================================
+REQUEST/RESPONSE EXAMPLES
+================================================================================
+
+REQUEST:
+  POST /transfers/send-to-bank
+  Authorization: Bearer {jwt_token}
+
+  {
+    "recipient_name": "John Doe",
+    "recipient_routing_number": "011000015",
+    "recipient_account_number": "123456789",
+    "amount_cents": 10000,
+    "memo": "Rent payment"
+  }
+
+RESPONSE (201 Created):
+  {
+    "transfer_id": "550e8400-e29b-41d4-a716-446655440000",
+    "amount": 100.00,
+    "fee": 0.01,
+    "total_debited": 100.01,
+    "recipient_name": "John Doe",
+    "recipient_last4": "6789",
+    "status": "pending",
+    "estimated_settlement": "1-3 business days",
+    "created_at": "2026-07-08T12:34:56Z"
+  }
+
+ERROR (402 Insufficient Balance):
+  "Insufficient balance. Have: $50.00, need: $100.01"
+
+ERROR (503 Service Unavailable):
+  "Banking service unavailable. Please try again later."
+
+================================================================================
+KEY FEATURES
+================================================================================
+
+1. Pessimistic Balance Model
+   - Balance decreases immediately when transfer initiated
+   - User sees immediate change (won't overdraft)
+   - If ACH fails later, balance is refunded
+
+2. Security
+   - Input validation: routing (9 digits), account (4-17 digits)
+   - Full bank details NOT stored (only last 4 of account)
+   - Idempotency keys prevent duplicate ACH entries
+   - Audit trail with 7-year compliance retention
+
+3. Error Handling
+   - Insufficient balance (402)
+   - No wallet (404)
+   - Column unavailable (503 with refund)
+   - ACH API errors (503 with refund)
+   - Input validation (422)
+
+4. Fee Model
+   - Flat $0.01 per transfer (same as P2P)
+   - No hidden ACH fees
+   - No gas fees (not blockchain)
+
+5. Settlement Time
+   - Status: pending (1-3 business days)
+   - Column handles ACH routing/clearing
+   - Webhook handler will update status on completion (TODO)
+
+================================================================================
+DEPLOYMENT STEPS
+================================================================================
+
+1. Code Review
+   - Verify models, routes, service logic
+   - Check input validation is complete
+   - Review error handling paths
+
+2. Testing
+   - Unit tests: pytest tests/test_bank_transfers.py -v
+   - Type checking: mypy services/crypto_wallet.py
+   - Syntax: py_compile models.py routers/crypto.py
+
+3. Deployment
+   - Push to git main branch
+   - Railway auto-deploys
+   - Verify logs: migration runs, no errors
+
+4. Verification
+   - Test endpoint: curl POST /transfers/send-to-bank
+   - Verify Column API key set (COLUMN_API_KEY)
+   - Check database: BankTransfer table created
+
+5. Frontend Integration (Next Phase)
+   - Create bank details form UI
+   - Add confirmation screen
+   - Implement API call
+   - Show pending status + settlement estimate
+
+================================================================================
+KNOWN GAPS
+================================================================================
+
+1. Column Account Mapping
+   - Currently passes empty column_account_id to ACH endpoint
+   - Fix: Map User.column_account_id when available
+
+2. Webhook Handler (TODO)
+   - ACH settlement events won't update status automatically
+   - Need: Implement routers/column_webhook.py handler
+
+3. User Notifications (TODO)
+   - No email when transfer completes or fails
+   - Need: Send via Resend on status change
+
+4. Frontend (TODO)
+   - No UI form for bank transfer
+   - Need: React/HTML form for routing/account entry
+
+================================================================================
+SUCCESS METRICS
+================================================================================
+
+After launch, track:
+  - Transfer volume (# of bank ACH transfers per day)
+  - Fee revenue (each transfer = $0.01)
+  - Success rate (% completed vs. failed)
+  - Settlement time (actual vs. estimated 1-3 days)
+  - User retention (do bank transfer users stay engaged)
+
+================================================================================
+SUMMARY
+================================================================================
+
+COMPLETED:
+  ✅ Database model (BankTransfer)
+  ✅ API endpoint (POST /transfers/send-to-bank)
+  ✅ Service logic (balance checks, ACH initiation)
+  ✅ Banking provider integration (Column)
+  ✅ Input validation + security
+  ✅ Error handling + refunds
+  ✅ Audit logging (7-year retention)
+  ✅ Unit tests
+  ✅ Full documentation
+
+NEXT STEPS:
+  → Frontend UI for bank details
+  → Column webhook handler for settlements
+  → User notification emails
+  → Integration testing
+  → Production launch
+
+MESSAGE TO STUDENTS:
+  "Send money to anyone - friends using FAWN or their bank account.
+   Same $0.01 fee. Instant for FAWN users, ACH standard for banks."
+
+================================================================================

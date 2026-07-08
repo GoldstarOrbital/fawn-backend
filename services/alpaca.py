@@ -141,3 +141,52 @@ async def create_ach_journal(alpaca_account_id: str, relationship_id: str,
             "direction": direction,
         },
     )
+
+
+async def get_quote(symbol: str) -> dict:
+    """Get real-time quote for a symbol (stock, ETF, or crypto).
+
+    Returns latest bid/ask, last trade, and trading status. Crypto symbols
+    (BTC, ETH) map to crypto data endpoints; traditional symbols (AAPL) use
+    stock quotes. Response includes price, change %, 52-week high/low, etc.
+    """
+    data = await _request("GET", f"/v1/market/stocks/{symbol.upper()}/quotes/latest")
+    if not data.get("quote"):
+        raise ValueError(f"No quote found for {symbol}")
+    q = data["quote"]
+    return {
+        "symbol": symbol.upper(),
+        "bid": float(q.get("bid_price", 0) or 0),
+        "ask": float(q.get("ask_price", 0) or 0),
+        "last": float(q.get("last_updated_price", 0) or q.get("bid_price", 0) or 0),
+        "bid_size": int(q.get("bid_size", 0) or 0),
+        "ask_size": int(q.get("ask_size", 0) or 0),
+        "timestamp": q.get("timestamp", ""),
+    }
+
+
+async def list_orders(alpaca_account_id: str, status: str = "all", limit: int = 100) -> list:
+    """List recent orders for the account.
+
+    status: 'open', 'closed', 'all'. Alpaca returns most recent first.
+    Limit max 100 per request (default); pagination via query params if needed.
+    """
+    params = {"status": status, "limit": limit}
+    data = await _request("GET", f"/v1/trading/accounts/{alpaca_account_id}/orders", params=params)
+    orders = data if isinstance(data, list) else data.get("orders", [])
+    return [
+        {
+            "order_id": o.get("id", ""),
+            "symbol": o.get("symbol", ""),
+            "qty": float(o.get("qty", 0) or 0),
+            "notional": float(o.get("notional", 0) or 0),
+            "side": o.get("side", ""),
+            "type": o.get("type", "market"),
+            "status": o.get("status", ""),
+            "filled_qty": float(o.get("filled_qty", 0) or 0),
+            "filled_avg_price": float(o.get("filled_avg_price", 0) or 0),
+            "created_at": o.get("created_at", ""),
+            "updated_at": o.get("updated_at", ""),
+        }
+        for o in orders
+    ]

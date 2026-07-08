@@ -447,6 +447,25 @@ class CryptoWallet(Base):
     )
 
 
+class InvestingWatchlist(Base):
+    """Watchlist of symbols (stocks, ETFs, crypto) a user is tracking.
+
+    Lets users save symbols for later review without placing an order.
+    One row per unique (user_id, symbol) pair.
+    """
+    __tablename__ = "investing_watchlist"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    symbol = Column(String, nullable=False)  # uppercase: AAPL, BTC, etc
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Unique constraint: one row per user per symbol
+    __table_args__ = (
+        Index('idx_watchlist_user_symbol', 'user_id', 'symbol', unique=True),
+    )
+
+
 class CryptoTransfer(Base):
     """Internal ledger entry for P2P USDC transfers.
 
