@@ -39,7 +39,8 @@ except ImportError:
 # For MVP: we'll use a placeholder for wallet creation.
 # In production, integrate with Ethers.js or similar for real wallet generation.
 
-PLATFORM_FEE_CENTS = 100  # $0.01 = 100 cents
+PLATFORM_FEE_CENTS = 50  # $0.50 = 50 cents (sustainable, cheap vs traditional)
+PREMIUM_FEE_CENTS = 0  # Premium tier users pay $0
 USDC_CHAIN = os.environ.get("USDC_CHAIN", "polygon")  # "polygon" | "ethereum"
 
 
