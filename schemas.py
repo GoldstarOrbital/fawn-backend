@@ -61,15 +61,19 @@ class RegisterRequest(BaseModel):
             raise ValueError("date_of_birth must be YYYY-MM-DD")
         return v
 
-    @field_validator("phone")
+    @field_validator("phone", mode="before")
     @classmethod
-    def phone_digits(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v.strip() == "":
+    def phone_digits(cls, v) -> Optional[str]:
+        # Handle None, empty string, or whitespace-only strings
+        if v is None or (isinstance(v, str) and v.strip() == ""):
             return None
-        digits = re.sub(r"\D", "", v)
-        if len(digits) < 10:
-            raise ValueError("Phone must have at least 10 digits")
-        return digits[-10:]
+        # Extract digits only
+        if isinstance(v, str):
+            digits = re.sub(r"\D", "", v)
+            if len(digits) < 10:
+                raise ValueError("Phone must have at least 10 digits")
+            return digits[-10:]
+        return v
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr

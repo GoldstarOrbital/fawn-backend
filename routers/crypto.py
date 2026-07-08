@@ -76,8 +76,8 @@ class SendToBankRequest(BaseModel):
     <30 seconds (instant). $0.01 flat fee (same as P2P transfers).
     """
     recipient_name: str = Field(..., min_length=1, max_length=100, description="Name on the receiving bank account")
-    recipient_routing_number: str = Field(..., regex=r"^\d{9}$", description="9-digit US routing number")
-    recipient_account_number: str = Field(..., regex=r"^\d{4,17}$", description="Bank account number (typically 4-17 digits)")
+    recipient_routing_number: str = Field(..., pattern=r"^\d{9}$", description="9-digit US routing number")
+    recipient_account_number: str = Field(..., pattern=r"^\d{4,17}$", description="Bank account number (typically 4-17 digits)")
     amount_cents: int = Field(..., gt=0, le=999999999, description="Amount to send in cents (e.g., 1000 = $10.00)")
     memo: str | None = Field(None, max_length=100, description="Payment memo/reference")
 
