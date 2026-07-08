@@ -104,8 +104,17 @@ def _init_db_schema():
         _patch("users", "wallet_initialized", "wallet_initialized BOOLEAN DEFAULT FALSE NOT NULL")
         _patch("users", "total_fees_paid_cents", "total_fees_paid_cents INTEGER DEFAULT 0 NOT NULL")
 
-        # crypto_wallets table columns (new table, may be missing in production)
-        _patch("crypto_wallets", "encrypted_private_key", "encrypted_private_key BYTEA")
+        # crypto_wallets table columns - ensure all columns exist
+        try:
+            # For postgres: BYTEA, for sqlite: BLOB
+            cols = {c["name"] for c in inspector.get_columns("crypto_wallets")}
+            if "encrypted_private_key" not in cols:
+                with engine.begin() as conn:
+                    # Use generic BYTEA syntax for Postgres
+                    conn.execute(text("ALTER TABLE crypto_wallets ADD COLUMN encrypted_private_key BYTEA"))
+                    print("[startup] added encrypted_private_key column to crypto_wallets")
+        except Exception as e:
+            print(f"[startup] crypto_wallets column add failed (continuing): {e}")
 
         # audit logging (user_audit_log table is created automatically via create_all)
     except Exception as e:
