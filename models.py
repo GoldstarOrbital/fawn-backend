@@ -20,15 +20,27 @@ class User(Base):
     military_status = Column(String, nullable=True)  # "none", "military_veteran_or_rotc", etc.
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Unit identifiers — set after BaaS account creation
+    # ── CRYPTO-NATIVE WALLET (NEW ARCHITECTURE) ──
+    # Stablecoin wallet address (Ethereum/Polygon). Set when user creates wallet.
+    crypto_wallet_address = Column(String, nullable=True, unique=True, index=True)
+    # Wallet type: "non_custodial" (user manages keys) or "fawn_custodial" (FAWN holds keys)
+    wallet_type = Column(String, nullable=True)  # default null until wallet created
+    # USDC balance in platform ledger (Decimal, in whole USD cents for precision)
+    # This tracks the balance per our internal ledger, not necessarily on-chain (may lag)
+    usdc_balance_cents = Column(Integer, default=0, nullable=False)  # balance in cents, e.g., 1000 = $10.00
+    # Flag: has user set up their wallet yet?
+    wallet_initialized = Column(Boolean, default=False, nullable=False)
+    # Total platform fees paid (in cents), for analytics/reporting
+    total_fees_paid_cents = Column(Integer, default=0, nullable=False)
+
+    # ── LEGACY BANKING FIELDS (kept for migration reference, not used) ──
     unit_customer_id = Column(String, nullable=True)
     unit_account_id = Column(String, nullable=True)
-    unit_application_id = Column(String, nullable=True)  # set when KYC is pending review
-    unit_application_form_id = Column(String, nullable=True)  # set for hosted Unit application forms
+    unit_application_id = Column(String, nullable=True)
+    unit_application_form_id = Column(String, nullable=True)
 
     # Multi-BaaS provider identifiers (Column / Lithic / Alpaca). All nullable —
-    # populated only once a user is opted into each provider. The Unit fields
-    # above stay authoritative until settings.baas_provider cuts banking over.
+    # populated only once a user is opted into each provider.
     column_entity_id = Column(String, nullable=True)      # Column person/entity record
     column_account_id = Column(String, nullable=True)     # Column bank account
     lithic_account_token = Column(String, nullable=True)  # Lithic financial account backing cards
@@ -405,3 +417,63 @@ class LithicEvent(Base):
     id = Column(String, primary_key=True)  # Lithic event token
     type = Column(String, nullable=False)
     received_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CryptoWallet(Base):
+    """Stablecoin wallet per user — tracks address, balance, and metadata.
+
+    Users can have at most one wallet per account, but this table allows
+    wallet migration / multi-chain support in the future without schema rewrites.
+    balance_cents is the canonical source of truth for ledger balance.
+    """
+    __tablename__ = "crypto_wallets"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, unique=True, index=True)  # 1:1 per user
+    wallet_address = Column(String, nullable=False, unique=True, index=True)
+    wallet_type = Column(String, nullable=False)  # "non_custodial" | "fawn_custodial"
+    chain = Column(String, nullable=False, default="polygon")  # "polygon" | "ethereum"
+    usdc_balance_cents = Column(Integer, default=0, nullable=False)  # balance in cents
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Future: public_key (non-custodial), encrypted_private_key (custodial), etc.
+
+
+class CryptoTransfer(Base):
+    """Internal ledger entry for P2P USDC transfers.
+
+    Each transfer costs the sender $0.01 (1000 cents) in platform fees.
+    Transfers are instant (no blockchain needed) — money moves in our ledger.
+    No gas fees — the $0.01 is pure platform revenue.
+    """
+    __tablename__ = "crypto_transfers"
+
+    id = Column(String, primary_key=True, default=new_id)
+    sender_id = Column(String, nullable=False, index=True)
+    recipient_address = Column(String, nullable=False)  # recipient's wallet address (onchain)
+    amount_cents = Column(Integer, nullable=False)  # amount in cents (e.g., 1000 = $10.00)
+    fee_cents = Column(Integer, default=100, nullable=False)  # always $0.01 = 100 cents (PLATFORM FEE, not gas)
+    # Status: pending (waiting for confirmation) | completed (sent) | failed (declined)
+    status = Column(String, default="completed", nullable=False, index=True)
+    # Hash for on-chain reference (if we ever settle transfers on-chain)
+    tx_hash = Column(String, nullable=True)
+    # Arbitrary memo / description
+    memo = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class FeeCollection(Base):
+    """Daily/periodic aggregation of platform fees collected.
+
+    Used for accounting and treasury management — tracks when fees are swept
+    to the FAWN treasury wallet and how much was collected each period.
+    """
+    __tablename__ = "fee_collections"
+
+    id = Column(String, primary_key=True, default=new_id)
+    collection_date = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    total_fees_cents = Column(Integer, nullable=False)  # sum of all fees from transfers this period
+    transfer_count = Column(Integer, default=0, nullable=False)  # how many transfers generated fees
+    treasury_wallet = Column(String, nullable=False)  # FAWN's wallet that received the fees
+    tx_hash = Column(String, nullable=True)  # on-chain sweep tx (if applicable)
+    collected_at = Column(DateTime(timezone=True), nullable=True)

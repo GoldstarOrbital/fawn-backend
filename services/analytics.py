@@ -30,6 +30,10 @@ EVENTS = {
     "MAGIC_LINK_REQUESTED": "magic_link_requested",
     "MAGIC_LINK_CONSUMED": "magic_link_consumed",
     "DEAL_SUGGESTION_SUBMITTED": "deal_suggestion_submitted",
+    # Crypto wallet events
+    "WALLET_CREATED": "wallet_created",
+    "TRANSFER_SENT": "transfer_sent",
+    "FEES_COLLECTED": "fees_collected",
 }
 
 

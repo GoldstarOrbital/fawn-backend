@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook, crypto
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -94,6 +94,13 @@ def _init_db_schema():
 
         # p2p_disputes columns added after initial schema
         _patch("p2p_disputes", "payment_id", "payment_id VARCHAR")
+
+        # crypto wallet columns — new crypto-native architecture (2026-07-08)
+        _patch("users", "crypto_wallet_address", "crypto_wallet_address VARCHAR UNIQUE")
+        _patch("users", "wallet_type", "wallet_type VARCHAR")  # non_custodial | fawn_custodial
+        _patch("users", "usdc_balance_cents", "usdc_balance_cents INTEGER DEFAULT 0 NOT NULL")
+        _patch("users", "wallet_initialized", "wallet_initialized BOOLEAN DEFAULT FALSE NOT NULL")
+        _patch("users", "total_fees_paid_cents", "total_fees_paid_cents INTEGER DEFAULT 0 NOT NULL")
     except Exception as e:
         print(f"[startup] schema patch pass failed (continuing): {e}")
 
@@ -171,6 +178,11 @@ app.include_router(investing.router)
 app.include_router(plaid_link.router)
 app.include_router(column_webhook.router)
 app.include_router(lithic_webhook.router)
+
+# Crypto-native stablecoin wallet & transfers
+app.include_router(crypto.router)
+app.include_router(crypto.transfer_router)
+app.include_router(crypto.admin_router)
 
 
 @app.on_event("startup")
