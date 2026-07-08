@@ -123,6 +123,8 @@ class UserResponse(BaseModel):
     location: Optional[str] = None
     military_status: Optional[str] = None
     wallet_initialized: Optional[bool] = None
+    crypto_wallet_address: Optional[str] = None
+    wallet_type: Optional[str] = None
     application_pending: Optional[bool] = None
     unit_application_form_ready: Optional[bool] = None
 
@@ -136,7 +138,9 @@ class UserResponse(BaseModel):
             school=getattr(user, "school", None),
             location=getattr(user, "location", None),
             military_status=getattr(user, "military_status", None),
-            wallet_initialized=bool(user.unit_account_id),
+            wallet_initialized=bool(user.wallet_initialized or user.unit_account_id),
+            crypto_wallet_address=getattr(user, "crypto_wallet_address", None),
+            wallet_type=getattr(user, "wallet_type", None),
             application_pending=bool(
                 getattr(user, "unit_application_id", None) and not user.unit_account_id
             ),
