@@ -395,14 +395,14 @@ async def send_to_bank(
     memo: str = None,
 ) -> dict:
     """
-    Send USDC to a traditional bank account via ACH.
+    Send USDC to a traditional bank account via instant Stripe Payouts.
 
     FLOW:
     1. User sends USDC from FAWN wallet
     2. Convert USDC → USD (1:1, no slippage)
-    3. Initiate ACH transfer via Column banking partner
+    3. Initiate instant payout via Stripe Payouts API
     4. Deduct amount + $0.01 fee from user balance
-    5. Return confirmation with expected settlement time
+    5. Return confirmation with expected settlement time (typically <30 seconds)
 
     Args:
         sender_id: FAWN user ID
@@ -422,14 +422,14 @@ async def send_to_bank(
             "recipient_name": "John Doe",
             "recipient_last4": "1234",
             "status": "pending",
-            "estimated_settlement": "1-3 business days",
+            "estimated_settlement": "Instant (typically <30 seconds)",
             "created_at": "2026-07-08T...",
         }
 
     Raises:
         WalletNotInitialized if sender has no wallet
         InsufficientBalance if sender can't cover transfer + fee
-        BankTransferError if ACH provider is unavailable or misconfigured
+        BankTransferError if payout provider is unavailable or misconfigured
     """
     sender = db.query(User).filter(User.id == sender_id).first()
     if not sender or not sender.crypto_wallet_address:
@@ -443,10 +443,10 @@ async def send_to_bank(
             f"need: ${total_needed / 100:.2f} (transfer + $0.01 fee)"
         )
 
-    # Idempotency key for ACH deduplication
+    # Idempotency key for payout deduplication
     idempotency_key = str(uuid.uuid4())
 
-    # Create bank transfer record (status=pending, waiting for ACH settlement)
+    # Create bank transfer record (status=pending, waiting for payout settlement)
     bank_transfer = BankTransfer(
         sender_id=sender_id,
         recipient_name=recipient_name,
@@ -477,6 +477,7 @@ async def send_to_bank(
             "amount_cents": amount_cents,
             "fee_cents": PLATFORM_FEE_CENTS,
             "bank_transfer_id": bank_transfer.id,
+            "method": "stripe_payout",
         }),
         retention_expires_at=retention_expires,
     )
@@ -484,44 +485,48 @@ async def send_to_bank(
 
     db.commit()
 
-    # ASYNC: Initiate ACH transfer via Column
-    # If Column is not configured, this raises BankTransferError (503 on API)
+    # ASYNC: Initiate instant payout via Stripe
+    # If Stripe is not configured, this raises BankTransferError (503 on API)
     # but the balance is already deducted (pessimistic — user sees pending)
-    # If ACH fails later, we mark status=failed in webhook handler
+    # If payout fails, we mark status=failed in webhook handler
     try:
-        from services import column
+        from services import stripe_payouts
 
-        ach_result = await column.create_ach_debit(
-            column_account_id="",  # TODO: map sender to their Column account
-            routing_number=recipient_routing_number,
-            account_number=recipient_account_number,
-            account_type="checking",  # default; could be parameterized
-            account_holder_name=recipient_name,
-            amount_cents=amount_cents,  # debit from recipient's acct (Column ACH DEBIT direction)
-            idempotency_key=idempotency_key,
+        payout_result = await stripe_payouts.create_payout(
+            amount_cents=amount_cents,
+            recipient_name=recipient_name,
+            recipient_routing_number=recipient_routing_number,
+            recipient_account_number=recipient_account_number,
+            recipient_account_type="checking",  # default; could be parameterized
+            metadata={
+                "fawn_bank_transfer_id": bank_transfer.id,
+                "fawn_user_id": sender_id,
+                "idempotency_key": idempotency_key,
+            },
         )
 
-        # Populate ACH ID on success
-        bank_transfer.ach_id = ach_result.get("id")
+        # Populate Stripe payout ID on success
+        bank_transfer.stripe_payout_id = payout_result.get("payout_id")
+        bank_transfer.stripe_payout_status = payout_result.get("status")
         db.commit()
 
-    except column.ColumnNotConfigured as e:
-        # Banking provider not configured — mark transfer failed
+    except stripe_payouts.StripeNotConfigured as e:
+        # Stripe provider not configured — mark transfer failed
         bank_transfer.status = "failed"
-        bank_transfer.error_message = "Banking service unavailable. Please try again later."
-        # REFUND: restore balance since ACH will never be initiated
+        bank_transfer.error_message = "Payout service unavailable. Please try again later."
+        # REFUND: restore balance since payout will never be initiated
         sender.usdc_balance_cents += total_needed
         sender.total_fees_paid_cents -= PLATFORM_FEE_CENTS
         db.commit()
         raise BankTransferError(str(e))
-    except column.ColumnError as e:
-        # ACH API error — mark transfer failed, refund user
+    except stripe_payouts.StripePayoutError as e:
+        # Payout API error — mark transfer failed, refund user
         bank_transfer.status = "failed"
-        bank_transfer.error_message = f"Banking service error: {str(e)[:200]}"
+        bank_transfer.error_message = f"Payout error: {str(e)[:200]}"
         sender.usdc_balance_cents += total_needed
         sender.total_fees_paid_cents -= PLATFORM_FEE_CENTS
         db.commit()
-        raise BankTransferError(f"ACH transfer failed: {str(e)}")
+        raise BankTransferError(f"Payout failed: {str(e)}")
 
     return {
         "transfer_id": bank_transfer.id,
@@ -531,7 +536,7 @@ async def send_to_bank(
         "recipient_name": recipient_name,
         "recipient_last4": recipient_account_number[-4:],
         "status": "pending",
-        "estimated_settlement": "1-3 business days",
+        "estimated_settlement": "Instant (typically <30 seconds)",
         "created_at": bank_transfer.created_at.isoformat() if bank_transfer.created_at else None,
     }
 

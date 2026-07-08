@@ -27,6 +27,7 @@ from database import get_db
 from models import FoundingMember, StripeEvent
 from config import settings
 from services.analytics import capture, EVENTS
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/stripe", tags=["stripe"])
 
@@ -165,6 +166,64 @@ def _welcome_customer(email: str, tier: str, member_number: int):
     _resend(email, f"Welcome to FAWN, Founding Member #{member_number}", html)
 
 
+def _send_payout_success_email(email: str, bank_transfer):
+    """Send confirmation email when payout completes (arrives in bank account)."""
+    amount = f"${bank_transfer.amount_cents / 100:.2f}"
+    recipient_last4 = bank_transfer.recipient_account_last4
+    html = f"""
+    <div style="font-family:-apple-system,sans-serif;max-width:520px;padding:32px;background:#0a0a0a;color:#f0f0f0;border-radius:16px;">
+      <h1 style="color:#00c896;font-size:1.8rem;margin:0 0 4px;">Money Sent ✓</h1>
+      <p style="color:#888;margin:0 0 24px;font-size:0.95rem;">Your {amount} payout just arrived at your bank.</p>
+
+      <div style="background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;margin-bottom:24px;">
+        <div style="font-size:0.7rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Transfer Details</div>
+        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+          <tr><td style="padding:6px 0;color:#666;">Amount</td><td style="padding:6px 0;font-weight:600;">{amount}</td></tr>
+          <tr><td style="padding:6px 0;color:#666;">To Account</td><td style="padding:6px 0;font-weight:600;">...{recipient_last4}</td></tr>
+          <tr><td style="padding:6px 0;color:#666;">Status</td><td style="padding:6px 0;font-weight:600;color:#00c896;">Completed</td></tr>
+          <tr><td style="padding:6px 0;color:#666;">Time</td><td style="padding:6px 0;font-weight:600;"><30 seconds</td></tr>
+        </table>
+      </div>
+
+      <p style="font-size:0.9rem;color:#aaa;margin-bottom:16px;">
+        No more waiting 1-3 business days. FAWN payouts happen instantly. Back to your wallet for more transfers whenever you need.
+      </p>
+
+      <p style="font-size:0.75rem;color:#555;margin-top:24px;">
+        Have questions? Reply to this email.
+      </p>
+    </div>
+    """
+    _resend(email, f"Payout Complete: {amount} sent to your bank", html)
+
+
+def _send_payout_failure_email(email: str, bank_transfer, failure_code: str):
+    """Send notification email when payout fails (refunded to wallet)."""
+    amount = f"${bank_transfer.amount_cents / 100:.2f}"
+    html = f"""
+    <div style="font-family:-apple-system,sans-serif;max-width:520px;padding:32px;background:#0a0a0a;color:#f0f0f0;border-radius:16px;">
+      <h1 style="color:#ff6b6b;font-size:1.8rem;margin:0 0 4px;">Payout Failed</h1>
+      <p style="color:#888;margin:0 0 24px;font-size:0.95rem;">We couldn't send your {amount} payout. Good news: we refunded it to your FAWN wallet.</p>
+
+      <div style="background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;margin-bottom:24px;">
+        <div style="font-size:0.7rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">What Happened</div>
+        <p style="margin:0;font-size:0.9rem;color:#aaa;">
+          <strong>Reason:</strong> {failure_code} (e.g., invalid account, bank rejected)
+          <br><br>
+          <strong>Refunded:</strong> {amount} back to your FAWN wallet
+          <br><br>
+          <strong>Next Steps:</strong> Check your bank details and try again, or contact support.
+        </p>
+      </div>
+
+      <p style="font-size:0.75rem;color:#555;margin-top:24px;">
+        Having trouble? Email support or reply to this message.
+      </p>
+    </div>
+    """
+    _resend(email, f"Payout Failed: {amount} refunded", html)
+
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     payload = await request.body()
@@ -194,7 +253,85 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
     obj = event.get("data", {}).get("object", {})
 
-    if event_type == "checkout.session.completed":
+    # Handle Stripe Payout events (instant bank transfers)
+    if event_type in ("payout.paid", "payout.failed"):
+        payout_id = obj.get("id", "")
+        payout_status = obj.get("status", "")
+        payout_amount = obj.get("amount", 0)
+
+        if not payout_id:
+            return {"received": True, "type": event_type, "skipped": "no payout id"}
+
+        # Find the BankTransfer record by stripe_payout_id
+        from models import BankTransfer
+        bank_transfer = db.query(BankTransfer).filter(
+            BankTransfer.stripe_payout_id == payout_id
+        ).first()
+
+        if not bank_transfer:
+            # Payout not found in our records — log but acknowledge Stripe
+            print(f"[stripe_webhook] Payout {payout_id} not found in BankTransfer records")
+            return {"received": True, "type": event_type, "skipped": "payout not found"}
+
+        # Update payout status
+        bank_transfer.stripe_payout_status = payout_status
+
+        if event_type == "payout.paid":
+            # Mark transfer as completed
+            bank_transfer.status = "completed"
+            bank_transfer.completed_at = datetime.now(tz=timezone.utc)
+
+            # Send success email to user
+            from models import User
+            user = db.query(User).filter(User.id == bank_transfer.sender_id).first()
+            if user:
+                _send_payout_success_email(user.email, bank_transfer)
+
+            db.commit()
+            capture(EVENTS.get("TRANSFER_COMPLETED", "transfer_completed"), bank_transfer.sender_id, {
+                "amount_cents": bank_transfer.amount_cents,
+                "bank_transfer_id": bank_transfer.id,
+            })
+
+            return {
+                "received": True,
+                "type": event_type,
+                "payout_id": payout_id,
+                "status": "completed",
+            }
+
+        elif event_type == "payout.failed":
+            # Mark transfer as failed and refund user
+            bank_transfer.status = "failed"
+            failure_code = obj.get("failure_code", "unknown")
+            bank_transfer.error_message = f"Payout failed: {failure_code}"
+
+            # Refund user's balance
+            from models import User
+            user = db.query(User).filter(User.id == bank_transfer.sender_id).first()
+            if user:
+                total_refund = bank_transfer.amount_cents + bank_transfer.fee_cents
+                user.usdc_balance_cents += total_refund
+                user.total_fees_paid_cents -= bank_transfer.fee_cents
+
+                # Send failure email to user
+                _send_payout_failure_email(user.email, bank_transfer, failure_code)
+
+            db.commit()
+            capture(EVENTS.get("TRANSFER_FAILED", "transfer_failed"), bank_transfer.sender_id, {
+                "amount_cents": bank_transfer.amount_cents,
+                "bank_transfer_id": bank_transfer.id,
+                "reason": failure_code,
+            })
+
+            return {
+                "received": True,
+                "type": event_type,
+                "payout_id": payout_id,
+                "status": "failed",
+            }
+
+    elif event_type == "checkout.session.completed":
         amount = obj.get("amount_total", 0)
         customer_email = obj.get("customer_details", {}).get("email", "")
         stripe_customer_id = obj.get("customer", "")

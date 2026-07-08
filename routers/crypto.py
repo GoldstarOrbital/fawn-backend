@@ -70,10 +70,10 @@ class SendUSDCRequest(BaseModel):
 
 
 class SendToBankRequest(BaseModel):
-    """Send USDC to a traditional bank account via ACH.
+    """Send USDC to a traditional bank account via instant Stripe Payouts.
 
-    USDC is converted 1:1 to USD and sent via ACH. Settlement: standard
-    1-3 business days. $0.01 flat fee (same as P2P transfers).
+    USDC is converted 1:1 to USD and sent instantly. Settlement: typically
+    <30 seconds (instant). $0.01 flat fee (same as P2P transfers).
     """
     recipient_name: str = Field(..., min_length=1, max_length=100, description="Name on the receiving bank account")
     recipient_routing_number: str = Field(..., regex=r"^\d{9}$", description="9-digit US routing number")
@@ -230,24 +230,24 @@ async def send_to_bank(
     db: Session = Depends(get_db),
 ):
     """
-    Send USDC to a traditional bank account via ACH.
+    Send USDC to a traditional bank account via instant Stripe Payouts.
 
     FLOW:
     1. User sends USDC from FAWN wallet
     2. FAWN converts USDC → USD (1:1, no slippage)
-    3. FAWN initiates ACH transfer to bank account
+    3. FAWN initiates instant payout via Stripe Payouts API
     4. USDC deducted from user balance (amount + $0.01 fee)
-    5. Status: pending (1-3 business days for settlement)
+    5. Status: pending (typically <30 seconds for settlement)
 
     Cost: flat $0.01 platform fee (on top of the transfer amount, no ACH fees).
 
     SECURITY:
-    - Recipient bank details NOT persisted (sent directly to banking provider)
+    - Recipient bank details NOT persisted (sent directly to Stripe)
     - Only account last 4 stored for reference
     - Audit logged with 7-year retention
     - Rate limited per user
 
-    Returns transfer ID, expected settlement time, and confirmation.
+    Returns transfer ID, expected settlement time (instant), and confirmation.
     """
     try:
         result = await crypto_wallet.send_to_bank(

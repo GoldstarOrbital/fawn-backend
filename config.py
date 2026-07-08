@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     gas_verified_date: str = "2026-06-19"
     gas_stale_after_days: int = 14
     stripe_secret_key: str = ""
+    stripe_publishable_key: str = ""
     stripe_webhook_secret: str = ""
     unit_webhook_secret: str = ""
     allow_unverified_ach_funding: bool = False

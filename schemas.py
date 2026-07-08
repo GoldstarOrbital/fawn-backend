@@ -16,7 +16,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     full_name: str
-    phone: str
+    phone: Optional[str] = None  # Optional for student signup; required for KYC
     date_of_birth: Optional[str] = None  # YYYY-MM-DD, passed to Unit when direct KYC is used
     ssn: Optional[str] = None            # 9 digits, passed to Unit when direct KYC is used, NEVER stored
     address: Optional[Address] = None
@@ -63,7 +63,9 @@ class RegisterRequest(BaseModel):
 
     @field_validator("phone")
     @classmethod
-    def phone_digits(cls, v: str) -> str:
+    def phone_digits(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return None
         digits = re.sub(r"\D", "", v)
         if len(digits) < 10:
             raise ValueError("Phone must have at least 10 digits")

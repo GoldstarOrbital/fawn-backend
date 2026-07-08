@@ -520,9 +520,11 @@ class BankTransfer(Base):
     and sent via ACH to a recipient bank account. Settlement time: standard
     ACH 1-3 business days. Costs $0.01 flat fee (same as P2P).
 
-    Recipient bank details (routing/account) are sent directly to Column and
+    Recipient bank details (routing/account) are sent directly to banking provider and
     NOT persisted on our side (only last 4 for reference), mirroring ACH
     funding's handling of raw account numbers for security.
+
+    Can be processed via Column (ACH) or Stripe Payouts (instant, <30 sec).
     """
     __tablename__ = "bank_transfers"
 
@@ -535,7 +537,9 @@ class BankTransfer(Base):
     fee_cents = Column(Integer, default=100, nullable=False)  # $0.01 = 100 cents
     status = Column(String, default="pending", nullable=False, index=True)  # pending | completed | failed
     memo = Column(String, nullable=True)
-    ach_id = Column(String, nullable=True, unique=True, index=True)  # Column ACH transfer ID (populated on success)
+    ach_id = Column(String, nullable=True, unique=True, index=True)  # Column ACH transfer ID (if using Column)
+    stripe_payout_id = Column(String, nullable=True, unique=True, index=True)  # Stripe payout ID (if using Stripe)
+    stripe_payout_status = Column(String, nullable=True)  # in_transit | paid | failed (Stripe status tracking)
     idempotency_key = Column(String, nullable=False, unique=True, index=True)  # prevent retries creating dupes
     error_message = Column(String, nullable=True)  # error detail if status=failed
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
