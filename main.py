@@ -101,6 +101,8 @@ def _init_db_schema():
         _patch("users", "usdc_balance_cents", "usdc_balance_cents INTEGER DEFAULT 0 NOT NULL")
         _patch("users", "wallet_initialized", "wallet_initialized BOOLEAN DEFAULT FALSE NOT NULL")
         _patch("users", "total_fees_paid_cents", "total_fees_paid_cents INTEGER DEFAULT 0 NOT NULL")
+
+        # audit logging (user_audit_log table is created automatically via create_all)
     except Exception as e:
         print(f"[startup] schema patch pass failed (continuing): {e}")
 
@@ -182,6 +184,7 @@ app.include_router(lithic_webhook.router)
 # Crypto-native stablecoin wallet & transfers
 app.include_router(crypto.router)
 app.include_router(crypto.transfer_router)
+app.include_router(crypto.user_router)  # user data export, deletion
 app.include_router(crypto.admin_router)
 
 

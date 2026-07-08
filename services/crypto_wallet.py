@@ -1,19 +1,22 @@
 """
 Stablecoin wallet service for FAWN's crypto-native architecture.
 
-Supports USDC on Polygon and Ethereum. Two wallet types:
-- non_custodial: User manages keys, we track balance
-- fawn_custodial: FAWN holds keys in encrypted storage (MVP: just balance tracking)
-
-No gas fees — platform charges a flat $0.01 per transfer.
+SECURITY:
+- Supports USDC on Polygon and Ethereum
+- Two wallet types: non_custodial (user manages keys) / fawn_custodial (FAWN holds keys)
+- No gas fees — flat $0.01 per transfer
+- All operations logged to UserAuditLog (7-year retention for compliance)
+- Seed phrases never logged, returned only once
+- Transfer amounts are logged for audit trail (not user IP, for privacy)
 """
 import os
 from decimal import Decimal
 from typing import Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
-from models import User, CryptoWallet, CryptoTransfer, FeeCollection
+from models import User, CryptoWallet, CryptoTransfer, FeeCollection, UserAuditLog
 import secrets
+import json
 
 # For MVP: we'll use a placeholder for wallet creation.
 # In production, integrate with Ethers.js or similar for real wallet generation.
@@ -100,6 +103,14 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
     user.wallet_type = wallet_type
     user.usdc_balance_cents = 0
     user.wallet_initialized = True
+
+    # SECURITY: Audit log the wallet creation (but NOT the seed phrase)
+    audit_log = UserAuditLog(
+        user_id=user_id,
+        action="created_wallet",
+        details=json.dumps({"wallet_type": wallet_type, "chain": USDC_CHAIN}),
+    )
+    db.add(audit_log)
 
     db.commit()
 
@@ -206,6 +217,18 @@ async def send_usdc(
     # Deduct from sender's balance (amount + fee)
     sender.usdc_balance_cents -= total_needed
     sender.total_fees_paid_cents += PLATFORM_FEE_CENTS
+
+    # SECURITY: Audit log the transfer (truncate recipient for privacy, log amount for compliance)
+    audit_log = UserAuditLog(
+        user_id=sender_id,
+        action="sent_transfer",
+        details=json.dumps({
+            "recipient": recipient_address[:6] + "..." + recipient_address[-4:],  # truncated
+            "amount_cents": amount_cents,
+            "fee_cents": PLATFORM_FEE_CENTS,
+        }),
+    )
+    db.add(audit_log)
 
     db.commit()
 

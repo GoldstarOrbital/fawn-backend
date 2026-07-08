@@ -477,3 +477,22 @@ class FeeCollection(Base):
     treasury_wallet = Column(String, nullable=False)  # FAWN's wallet that received the fees
     tx_hash = Column(String, nullable=True)  # on-chain sweep tx (if applicable)
     collected_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class UserAuditLog(Base):
+    """Append-only audit trail for every significant user action.
+
+    Required for compliance and security. Logs wallet creation, transfers,
+    failed auth attempts, data exports. Immutable (never delete).
+    """
+    __tablename__ = "user_audit_log"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False, index=True)  # created_wallet, sent_transfer, export_data, failed_auth
+    details = Column(String, nullable=True)  # JSON-encoded details (wallet_type, amount, recipient truncated, etc)
+    ip_address = Column(String, nullable=True)  # source IP for geo/fraud detection
+    user_agent = Column(String, nullable=True)  # browser/client info
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    # CRITICAL: 7-year retention for financial compliance. Never auto-delete.
