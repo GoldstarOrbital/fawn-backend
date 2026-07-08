@@ -378,6 +378,6 @@ def lookup_user_status(
         "unit_customer_id": user.unit_customer_id,
         "unit_account_id": user.unit_account_id,
         "unit_application_id": user.unit_application_id,
-        "account_active": bool(user.unit_account_id),
+        "wallet_initialized": bool(user.unit_account_id),
         "application_pending": bool(user.unit_application_id and not user.unit_account_id),
     }

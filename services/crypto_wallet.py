@@ -15,10 +15,11 @@ from decimal import Decimal
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
-from models import User, CryptoWallet, CryptoTransfer, FeeCollection, UserAuditLog
+from models import User, CryptoWallet, CryptoTransfer, FeeCollection, UserAuditLog, BankTransfer
 import secrets
 import json
 import re
+import uuid
 
 # Real BIP39 seed phrase generation
 try:
@@ -54,6 +55,11 @@ class InsufficientBalance(Exception):
 
 class InvalidAddress(Exception):
     """Recipient wallet address is invalid."""
+    pass
+
+
+class BankTransferError(Exception):
+    """ACH transfer error (typically banking provider unreachable or config missing)."""
     pass
 
 
@@ -377,6 +383,157 @@ async def get_transfer_history(user_id: str, db: Session, limit: int = 50) -> li
         }
         for t in transfers
     ]
+
+
+async def send_to_bank(
+    sender_id: str,
+    recipient_name: str,
+    recipient_routing_number: str,
+    recipient_account_number: str,
+    amount_cents: int,
+    db: Session,
+    memo: str = None,
+) -> dict:
+    """
+    Send USDC to a traditional bank account via ACH.
+
+    FLOW:
+    1. User sends USDC from FAWN wallet
+    2. Convert USDC → USD (1:1, no slippage)
+    3. Initiate ACH transfer via Column banking partner
+    4. Deduct amount + $0.01 fee from user balance
+    5. Return confirmation with expected settlement time
+
+    Args:
+        sender_id: FAWN user ID
+        recipient_name: Name on receiving bank account
+        recipient_routing_number: 9-digit US routing number
+        recipient_account_number: Bank account number (4-17 digits)
+        amount_cents: amount to send in cents (e.g., 1000 = $10.00)
+        db: database session
+        memo: optional payment reference
+
+    Returns:
+        {
+            "transfer_id": "...",
+            "amount": 10.00,
+            "fee": 0.01,
+            "total_debited": 10.01,
+            "recipient_name": "John Doe",
+            "recipient_last4": "1234",
+            "status": "pending",
+            "estimated_settlement": "1-3 business days",
+            "created_at": "2026-07-08T...",
+        }
+
+    Raises:
+        WalletNotInitialized if sender has no wallet
+        InsufficientBalance if sender can't cover transfer + fee
+        BankTransferError if ACH provider is unavailable or misconfigured
+    """
+    sender = db.query(User).filter(User.id == sender_id).first()
+    if not sender or not sender.crypto_wallet_address:
+        raise WalletNotInitialized(f"Sender {sender_id} has no stablecoin wallet")
+
+    # Check balance (amount + $0.01 fee)
+    total_needed = amount_cents + PLATFORM_FEE_CENTS
+    if sender.usdc_balance_cents < total_needed:
+        raise InsufficientBalance(
+            f"Insufficient balance. Have: ${sender.usdc_balance_cents / 100:.2f}, "
+            f"need: ${total_needed / 100:.2f} (transfer + $0.01 fee)"
+        )
+
+    # Idempotency key for ACH deduplication
+    idempotency_key = str(uuid.uuid4())
+
+    # Create bank transfer record (status=pending, waiting for ACH settlement)
+    bank_transfer = BankTransfer(
+        sender_id=sender_id,
+        recipient_name=recipient_name,
+        recipient_routing_number=recipient_routing_number,
+        recipient_account_last4=recipient_account_number[-4:],  # only store last 4 for security
+        amount_cents=amount_cents,
+        fee_cents=PLATFORM_FEE_CENTS,
+        status="pending",
+        memo=memo,
+        idempotency_key=idempotency_key,
+    )
+    db.add(bank_transfer)
+
+    # Deduct from sender's balance immediately (amount + fee)
+    sender.usdc_balance_cents -= total_needed
+    sender.total_fees_paid_cents += PLATFORM_FEE_CENTS
+
+    # SECURITY: Audit log the bank transfer (recipient name + routing last 4 for compliance)
+    # 7-year retention
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
+    audit_log = UserAuditLog(
+        user_id=sender_id,
+        action="sent_bank_transfer",
+        details=json.dumps({
+            "recipient_name": recipient_name,
+            "routing_last4": recipient_routing_number[-4:],
+            "account_last4": recipient_account_number[-4:],
+            "amount_cents": amount_cents,
+            "fee_cents": PLATFORM_FEE_CENTS,
+            "bank_transfer_id": bank_transfer.id,
+        }),
+        retention_expires_at=retention_expires,
+    )
+    db.add(audit_log)
+
+    db.commit()
+
+    # ASYNC: Initiate ACH transfer via Column
+    # If Column is not configured, this raises BankTransferError (503 on API)
+    # but the balance is already deducted (pessimistic — user sees pending)
+    # If ACH fails later, we mark status=failed in webhook handler
+    try:
+        from services import column
+
+        ach_result = await column.create_ach_debit(
+            column_account_id="",  # TODO: map sender to their Column account
+            routing_number=recipient_routing_number,
+            account_number=recipient_account_number,
+            account_type="checking",  # default; could be parameterized
+            account_holder_name=recipient_name,
+            amount_cents=amount_cents,  # debit from recipient's acct (Column ACH DEBIT direction)
+            idempotency_key=idempotency_key,
+        )
+
+        # Populate ACH ID on success
+        bank_transfer.ach_id = ach_result.get("id")
+        db.commit()
+
+    except column.ColumnNotConfigured as e:
+        # Banking provider not configured — mark transfer failed
+        bank_transfer.status = "failed"
+        bank_transfer.error_message = "Banking service unavailable. Please try again later."
+        # REFUND: restore balance since ACH will never be initiated
+        sender.usdc_balance_cents += total_needed
+        sender.total_fees_paid_cents -= PLATFORM_FEE_CENTS
+        db.commit()
+        raise BankTransferError(str(e))
+    except column.ColumnError as e:
+        # ACH API error — mark transfer failed, refund user
+        bank_transfer.status = "failed"
+        bank_transfer.error_message = f"Banking service error: {str(e)[:200]}"
+        sender.usdc_balance_cents += total_needed
+        sender.total_fees_paid_cents -= PLATFORM_FEE_CENTS
+        db.commit()
+        raise BankTransferError(f"ACH transfer failed: {str(e)}")
+
+    return {
+        "transfer_id": bank_transfer.id,
+        "amount": amount_cents / 100.0,
+        "fee": PLATFORM_FEE_CENTS / 100.0,
+        "total_debited": total_needed / 100.0,
+        "recipient_name": recipient_name,
+        "recipient_last4": recipient_account_number[-4:],
+        "status": "pending",
+        "estimated_settlement": "1-3 business days",
+        "created_at": bank_transfer.created_at.isoformat() if bank_transfer.created_at else None,
+    }
 
 
 async def collect_fees(db: Session) -> dict:

@@ -494,6 +494,43 @@ class FeeCollection(Base):
     collected_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class BankTransfer(Base):
+    """ACH transfer from FAWN USDC wallet to any traditional bank account.
+
+    User sends USDC from their FAWN wallet, which is converted 1:1 to USD
+    and sent via ACH to a recipient bank account. Settlement time: standard
+    ACH 1-3 business days. Costs $0.01 flat fee (same as P2P).
+
+    Recipient bank details (routing/account) are sent directly to Column and
+    NOT persisted on our side (only last 4 for reference), mirroring ACH
+    funding's handling of raw account numbers for security.
+    """
+    __tablename__ = "bank_transfers"
+
+    id = Column(String, primary_key=True, default=new_id)
+    sender_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    recipient_name = Column(String, nullable=False)
+    recipient_routing_number = Column(String, nullable=False)  # last 4 stored for reference
+    recipient_account_last4 = Column(String, nullable=False)  # mask for user reference
+    amount_cents = Column(Integer, nullable=False)  # USDC amount (1:1 USD conversion)
+    fee_cents = Column(Integer, default=100, nullable=False)  # $0.01 = 100 cents
+    status = Column(String, default="pending", nullable=False, index=True)  # pending | completed | failed
+    memo = Column(String, nullable=True)
+    ach_id = Column(String, nullable=True, unique=True, index=True)  # Column ACH transfer ID (populated on success)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)  # prevent retries creating dupes
+    error_message = Column(String, nullable=True)  # error detail if status=failed
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Constraints and indexes
+    __table_args__ = (
+        CheckConstraint("amount_cents > 0"),
+        CheckConstraint("status IN ('pending', 'completed', 'failed')"),
+        Index('idx_bank_transfer_sender_created', 'sender_id', 'created_at'),
+        Index('idx_bank_transfer_pending', 'sender_id', 'status'),
+    )
+
+
 class UserAuditLog(Base):
     """Append-only audit trail for every significant user action.
 

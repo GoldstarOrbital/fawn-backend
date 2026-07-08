@@ -113,7 +113,7 @@ _init_db_schema()
 
 app = FastAPI(
     title="FAWN API",
-    description="Crypto-native stablecoin wallet + financial news. USDC transfers, no KYC.",
+    description="Student-focused banking platform. Send money instantly to anyone - FAWN users or traditional bank accounts. No monthly fees.",
     version="0.2.0",
 )
 

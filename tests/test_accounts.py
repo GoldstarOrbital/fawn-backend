@@ -93,7 +93,7 @@ def test_activate_sandbox_happy_path(client, monkeypatch):
     resp = client.post("/accounts/activate-sandbox", headers=_auth(token))
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["account_active"] is True
+    assert body["wallet_initialized"] is True
     assert body["unit_account_id"] == "acc_fake456"
 
     # Idempotent: calling again with an already-active account is a no-op, not an error
@@ -145,7 +145,7 @@ def test_refresh_application_status_completes_hosted_form_application(client, mo
 
     resp = client.post("/accounts/refresh-application-status", headers=_auth(token))
     assert resp.status_code == 200, resp.text
-    assert resp.json()["account_active"] is True
+    assert resp.json()["wallet_initialized"] is True
     assert resp.json()["unit_account_id"] == "acc_hosted456"
 
     db = SessionLocal()

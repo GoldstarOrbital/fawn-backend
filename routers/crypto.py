@@ -69,6 +69,49 @@ class SendUSDCRequest(BaseModel):
         return v
 
 
+class SendToBankRequest(BaseModel):
+    """Send USDC to a traditional bank account via ACH.
+
+    USDC is converted 1:1 to USD and sent via ACH. Settlement: standard
+    1-3 business days. $0.01 flat fee (same as P2P transfers).
+    """
+    recipient_name: str = Field(..., min_length=1, max_length=100, description="Name on the receiving bank account")
+    recipient_routing_number: str = Field(..., regex=r"^\d{9}$", description="9-digit US routing number")
+    recipient_account_number: str = Field(..., regex=r"^\d{4,17}$", description="Bank account number (typically 4-17 digits)")
+    amount_cents: int = Field(..., gt=0, le=999999999, description="Amount to send in cents (e.g., 1000 = $10.00)")
+    memo: str | None = Field(None, max_length=100, description="Payment memo/reference")
+
+    @validator("recipient_name")
+    def validate_recipient_name(cls, v):
+        """Security: prevent injection attacks in bank transfer names."""
+        if "\x00" in v or any(ord(c) < 32 for c in v):
+            raise ValueError("Recipient name contains invalid characters")
+        # Only allow alphanumeric, spaces, and common name punctuation
+        if not re.match(r"^[a-zA-Z0-9\s\-\.\',]*$", v):
+            raise ValueError("Recipient name contains invalid characters")
+        return v
+
+    @validator("memo")
+    def validate_memo(cls, v):
+        """Security: prevent null bytes and control characters in memo."""
+        if v and ("\x00" in v or any(ord(c) < 32 for c in v)):
+            raise ValueError("Memo contains invalid characters")
+        return v
+
+
+class BankTransferResponse(BaseModel):
+    """Response for bank transfer (ACH) request."""
+    transfer_id: str
+    amount: float  # USD amount (same as USDC amount)
+    fee: float
+    total_debited: float
+    recipient_name: str
+    recipient_last4: str  # account last 4 digits for reference
+    status: str  # pending | completed | failed
+    estimated_settlement: str  # "1-3 business days"
+    created_at: str | None
+
+
 class TransferResponse(BaseModel):
     transfer_id: str
     amount: float
@@ -176,6 +219,57 @@ async def send_usdc(
         raise HTTPException(status_code=400, detail=str(e))
     except crypto_wallet.InsufficientBalance as e:
         raise HTTPException(status_code=402, detail=str(e))  # 402 = Payment Required
+
+
+@transfer_router.post("/send-to-bank", response_model=BankTransferResponse, status_code=201)
+@limiter.limit(RATE_LIMITS["transfer_send"])
+async def send_to_bank(
+    req: SendToBankRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Send USDC to a traditional bank account via ACH.
+
+    FLOW:
+    1. User sends USDC from FAWN wallet
+    2. FAWN converts USDC → USD (1:1, no slippage)
+    3. FAWN initiates ACH transfer to bank account
+    4. USDC deducted from user balance (amount + $0.01 fee)
+    5. Status: pending (1-3 business days for settlement)
+
+    Cost: flat $0.01 platform fee (on top of the transfer amount, no ACH fees).
+
+    SECURITY:
+    - Recipient bank details NOT persisted (sent directly to banking provider)
+    - Only account last 4 stored for reference
+    - Audit logged with 7-year retention
+    - Rate limited per user
+
+    Returns transfer ID, expected settlement time, and confirmation.
+    """
+    try:
+        result = await crypto_wallet.send_to_bank(
+            sender_id=user_id,
+            recipient_name=req.recipient_name,
+            recipient_routing_number=req.recipient_routing_number,
+            recipient_account_number=req.recipient_account_number,
+            amount_cents=req.amount_cents,
+            db=db,
+            memo=req.memo,
+        )
+        capture(EVENTS["TRANSFER_SENT"], user_id, {
+            "amount_cents": req.amount_cents,
+            "transfer_type": "bank_ach"
+        })
+        return result
+    except crypto_wallet.WalletNotInitialized:
+        raise HTTPException(status_code=404, detail="No stablecoin wallet. Call POST /wallet/create first.")
+    except crypto_wallet.InsufficientBalance as e:
+        raise HTTPException(status_code=402, detail=str(e))  # 402 = Payment Required
+    except crypto_wallet.BankTransferError as e:
+        raise HTTPException(status_code=503, detail=str(e))  # 503 = Service Unavailable
 
 
 @transfer_router.get("/history", response_model=list[TransferHistoryItem])

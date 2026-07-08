@@ -116,7 +116,7 @@ class UserResponse(BaseModel):
     school: Optional[str] = None
     location: Optional[str] = None
     military_status: Optional[str] = None
-    account_active: Optional[bool] = None
+    wallet_initialized: Optional[bool] = None
     application_pending: Optional[bool] = None
     unit_application_form_ready: Optional[bool] = None
 
@@ -130,7 +130,7 @@ class UserResponse(BaseModel):
             school=getattr(user, "school", None),
             location=getattr(user, "location", None),
             military_status=getattr(user, "military_status", None),
-            account_active=bool(user.unit_account_id),
+            wallet_initialized=bool(user.unit_account_id),
             application_pending=bool(
                 getattr(user, "unit_application_id", None) and not user.unit_account_id
             ),

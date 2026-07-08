@@ -24,24 +24,24 @@ _SIGNATURE = (
 
 def build_email_2(name: str) -> tuple[str, str]:
     """Email #2 — Day 3 — Overdraft fee explainer."""
-    subject = "The truth about transfer fees nobody talks about"
+    subject = "The truth about banking fees nobody talks about"
     html = f"""<html><body style="{_BASE_STYLE}">
   <p>Hey {name},</p>
   <p>
-    A friend sent USDC once and paid $5.
-    Traditional transfers cost $35.
+    A friend sent money once and paid nothing.
+    Traditional banks charge $35 for overdrafts.
     Not a loan repayment fee. Not interest. Just a flat $35 penalty for being $4 short for a few hours.
   </p>
   <p>
-    That's when it clicked for me: traditional fees aren't a safety net — they're a revenue model.
-    Traditional financial services collected billions in hidden fees last year.
-    The people paying most? Users like you.
+    That's when it clicked for me: traditional banking fees aren't a safety net — they're a revenue model.
+    Traditional banks collected billions in hidden fees last year.
+    The people paying most? Students like you.
   </p>
   <p>
-    FAWN charges $0.01 flat fee per transfer. No hidden charges. No surprises. No shame spiral — just transparent costs you can control.
+    FAWN charges $0.01 flat fee per transfer. No monthly fees. No hidden charges. No surprises. No shame spiral — just transparent costs you can control.
   </p>
   <p>
-    That's the whole idea: a wallet that keeps your crypto safe without extracting value during your hardest times.
+    That's the whole idea: banking built for students that keeps your money safe without extracting value during your hardest times.
   </p>
   <p>More soon.</p>
   {_SIGNATURE}
@@ -55,10 +55,10 @@ def build_email_3(name: str) -> tuple[str, str]:
     html = f"""<html><body style="{_BASE_STYLE}">
   <p>Hey {name},</p>
   <p>
-    I want to be upfront about something most financial platforms never tell you: their real revenue model.
+    I want to be upfront about something most banks never tell you: their real revenue model.
   </p>
   <p>
-    Traditional services profit from YOUR fees:
+    Traditional banks profit from YOUR fees:
   </p>
   <ul>
     <li>Overdraft fees (~$35 a hit)</li>
@@ -86,7 +86,7 @@ def build_email_3(name: str) -> tuple[str, str]:
   </p>
   <p>
     No monthly fees. No minimum balance. No gotchas.
-    USDC is held in your non-custodial or FAWN-custodial wallet, regulated by NYDFS as a stablecoin.
+    Your money is held as USDC, a USD-backed stablecoin regulated by NYDFS.
   </p>
   <p>That's the deal.</p>
   <p>
@@ -127,7 +127,7 @@ def build_email_4(name: str) -> tuple[str, str]:
   </p>
   <p>
     Share it in your group chat, your dorm Slack, anywhere your friends are complaining
-    about transfer fees. Every signup through your link counts.
+    about banking fees. Every signup through your link counts.
   </p>
   <p>
     Beta spots are limited — we're keeping the first cohort small so we can give
@@ -155,7 +155,7 @@ def build_email_5(name: str) -> tuple[str, str]:
     Here's what beta members get:
   </p>
   <ul>
-    <li>Early access to the FAWN card and account</li>
+    <li>Early access to student banking without the fees</li>
     <li>Direct line to the founders — your feedback shapes the product</li>
     <li>Founding member status (we'll remember who showed up early)</li>
   </ul>

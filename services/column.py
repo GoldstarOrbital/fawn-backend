@@ -161,6 +161,62 @@ async def create_ach_credit(column_account_id: str, routing_number: str,
     )
 
 
+async def create_ach_debit(column_account_id: str, routing_number: str,
+                           account_number: str, account_type: str,
+                           account_holder_name: str, amount_cents: int,
+                           idempotency_key: str) -> dict:
+    """Send funds from a FAWN Column account to an external bank account via ACH.
+
+    This is the reverse of create_ach_credit(): money flows OUT from our Column
+    account to the recipient's bank. Known as ACH "debit" or "push" payment.
+
+    Counterparty bank details (routing/account) are sent directly to Column and
+    NOT persisted on our side (only last 4 for reference), mirroring the security
+    model of ACH funding. Settlement is standard ACH: 1-3 business days.
+
+    Args:
+        column_account_id: FAWN's Column bank account (source of funds)
+        routing_number: 9-digit US routing number of recipient bank
+        account_number: Recipient bank account number
+        account_type: "checking" or "savings"
+        account_holder_name: Name on recipient account
+        amount_cents: Amount in cents (e.g., 1000 = $10.00)
+        idempotency_key: For deduplication across retries
+
+    Returns:
+        {
+            "id": "...",
+            "type": "ACH_DEBIT",
+            "amount": 1000,
+            "status": "pending",  # or "completed"/"failed"
+            "created_at": "2026-07-08T...",
+            ...
+        }
+
+    Raises:
+        ColumnNotConfigured if COLUMN_API_KEY is unset
+        ColumnError on API failure (non-2xx response)
+    """
+    return await _request(
+        "POST",
+        "/transfers/ach",
+        json={
+            "bank_account_id": column_account_id,
+            "type": "DEBIT",  # "DEBIT" = send OUT to external account
+            "amount": amount_cents,
+            "currency_code": "USD",
+            "description": "FAWN Send to Bank",
+            "counterparty": {
+                "routing_number": routing_number,
+                "account_number": account_number,
+                "account_type": account_type,
+                "name": account_holder_name,
+            },
+        },
+        idempotency_key=idempotency_key,
+    )
+
+
 async def list_transactions(column_account_id: str, limit: int = 20) -> list:
     data = await _request("GET", "/transfers", params={"bank_account_id": column_account_id, "limit": limit})
     out = []

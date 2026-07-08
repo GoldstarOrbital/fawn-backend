@@ -79,7 +79,7 @@ async def get_dashboard(current_user: User = Depends(get_current_user)):
 
     if not current_user.unit_account_id:
         return {
-            "account_active": False,
+            "wallet_initialized": False,
             "application_pending": application_pending,
             "balance": None,
             "account_details": None,
@@ -94,7 +94,7 @@ async def get_dashboard(current_user: User = Depends(get_current_user)):
     )
 
     return {
-        "account_active": True,
+        "wallet_initialized": True,
         "application_pending": False,
         "balance": balance,
         "account_details": details,
@@ -140,7 +140,7 @@ async def refresh_application_status(
     )
 
     return {
-        "account_active": bool(current_user.unit_account_id),
+        "wallet_initialized": bool(current_user.unit_account_id),
         "application_pending": application_pending,
         "unit_account_id": current_user.unit_account_id,
     }
@@ -158,7 +158,7 @@ async def activate_sandbox(
         )
 
     if current_user.unit_account_id:
-        return {"account_active": True, "application_pending": False, "unit_account_id": current_user.unit_account_id}
+        return {"wallet_initialized": True, "application_pending": False, "unit_account_id": current_user.unit_account_id}
 
     if not current_user.unit_application_id:
         raise HTTPException(status_code=400, detail="No application on file - register first.")
@@ -182,4 +182,4 @@ async def activate_sandbox(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Sandbox activation failed: {e}")
 
-    return {"account_active": True, "application_pending": False, "unit_account_id": current_user.unit_account_id}
+    return {"wallet_initialized": True, "application_pending": False, "unit_account_id": current_user.unit_account_id}
