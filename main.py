@@ -206,7 +206,9 @@ async def _start_podcast_scheduler():
                 await asyncio.sleep(podcast_svc.seconds_until_next_release())
                 db = SessionLocal()
                 try:
-                    await podcast_svc.generate_episode(db)
+                    episode = await podcast_svc.generate_episode(db)
+                    if episode:
+                        await podcast_svc.send_episode_to_subscribers(db, episode)
                 finally:
                     db.close()
             except asyncio.CancelledError:

@@ -168,6 +168,59 @@ async def generate_episode(db: Session, force: bool = False) -> PodcastEpisode |
     return episode
 
 
+async def send_episode_to_subscribers(db: Session, episode: PodcastEpisode) -> int:
+    """Send today's episode link to all active users via email.
+
+    Returns count of emails sent successfully.
+    """
+    from config import settings
+    from models import User
+    from email_templates import build_daily_brief
+
+    if not settings.resend_api_key:
+        print(f"[podcast-email] skipped: no resend_api_key configured")
+        return 0
+
+    # Fetch all users with active wallets
+    users = db.query(User).filter(User.wallet_initialized == True).all()
+    if not users:
+        print(f"[podcast-email] no subscribers")
+        return 0
+
+    subject, html = build_daily_brief(
+        episode.episode_date,
+        episode.title,
+        episode.est_duration_seconds
+    )
+
+    sent_count = 0
+    for user in users:
+        try:
+            resp = httpx.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.resend_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": f"FAWN <{settings.from_email}>",
+                    "to": [user.email],
+                    "subject": subject,
+                    "html": html,
+                },
+                timeout=10,
+            )
+            if resp.status_code in (200, 201):
+                sent_count += 1
+            else:
+                print(f"[podcast-email] to {user.email} failed: {resp.status_code}")
+        except Exception as e:
+            print(f"[podcast-email] to {user.email} raised: {e}")
+
+    print(f"[podcast-email] sent {sent_count}/{len(users)} daily briefs")
+    return sent_count
+
+
 def _prune_old_episodes(db: Session):
     try:
         cutoff = (datetime.now(PACIFIC) - timedelta(days=KEEP_EPISODES)).strftime("%Y-%m-%d")
