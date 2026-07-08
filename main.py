@@ -104,6 +104,9 @@ def _init_db_schema():
         _patch("users", "wallet_initialized", "wallet_initialized BOOLEAN DEFAULT FALSE NOT NULL")
         _patch("users", "total_fees_paid_cents", "total_fees_paid_cents INTEGER DEFAULT 0 NOT NULL")
 
+        # user_audit_log columns
+        _patch("user_audit_log", "retention_expires_at", "retention_expires_at TIMESTAMP WITH TIME ZONE")
+
         # crypto_wallets table - ensure encrypted_private_key column exists
         try:
             with engine.begin() as conn:
