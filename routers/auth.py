@@ -10,9 +10,6 @@ from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
 from jose import jwt
 import bcrypt
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-
 from database import get_db
 from models import User, PasswordResetToken
 from schemas import (
@@ -27,9 +24,9 @@ from schemas import (
 from config import settings
 from dependencies import get_current_user
 from services import unit as unit_svc
+from rate_limiting import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-limiter = Limiter(key_func=get_remote_address)
 
 RESET_LINK_EXPIRY_MINUTES = 30
 RESET_LINK_BASE = "https://goldstarorbital.github.io/fawn-landing/reset-password.html"
@@ -167,7 +164,8 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/token", response_model=TokenResponse, include_in_schema=False)
-def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def token(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(func.lower(User.email) == form.username.lower()).first()
     if not user or not _verify(form.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")

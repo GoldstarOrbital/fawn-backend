@@ -5,7 +5,7 @@ SECURITY:
 - All endpoints require Bearer token authentication (user login)
 - Input validation: wallet addresses, amounts, memo length
 - Authorization: users can only access their own wallets/transfers
-- Rate limiting: prevents abuse (see main.py)
+- Rate limiting: aggressive per-user limits on sensitive endpoints
 - No seed phrases logged, returned only once
 - Error messages do not leak sensitive data
 """
@@ -16,6 +16,7 @@ from database import get_db
 from middleware.auth import get_current_user_id
 from services import crypto_wallet
 from services.analytics import capture, EVENTS
+from rate_limiting import limiter, RATE_LIMITS
 import re
 
 router = APIRouter(prefix="/wallet", tags=["crypto"])
@@ -89,8 +90,10 @@ class TransferHistoryItem(BaseModel):
 
 
 @router.post("/create", response_model=CreateWalletResponse, status_code=201)
+@limiter.limit(RATE_LIMITS["wallet_create"])
 async def create_wallet(
     req: CreateWalletRequest,
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
@@ -115,7 +118,9 @@ async def create_wallet(
 
 
 @router.get("/balance", response_model=BalanceResponse)
+@limiter.limit(RATE_LIMITS["wallet_balance"])
 async def get_balance(
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
@@ -139,8 +144,10 @@ transfer_router = APIRouter(prefix="/transfers", tags=["transfers"])
 
 
 @transfer_router.post("/send", response_model=TransferResponse, status_code=201)
+@limiter.limit(RATE_LIMITS["transfer_send"])
 async def send_usdc(
     req: SendUSDCRequest,
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
@@ -171,7 +178,9 @@ async def send_usdc(
 
 
 @transfer_router.get("/history", response_model=list[TransferHistoryItem])
+@limiter.limit(RATE_LIMITS["transfer_history"])
 async def transfer_history(
+    request: Request,
     limit: int = 50,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -193,7 +202,9 @@ user_router = APIRouter(prefix="/user", tags=["user-data"])
 
 
 @user_router.get("/export")
+@limiter.limit(RATE_LIMITS["user_export"])
 async def export_user_data(
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
@@ -267,7 +278,9 @@ async def export_user_data(
 
 
 @user_router.post("/delete")
+@limiter.limit(RATE_LIMITS["user_delete"])
 async def request_account_deletion(
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
@@ -305,7 +318,9 @@ admin_router = APIRouter(prefix="/fees", tags=["admin"])
 
 
 @admin_router.post("/collect")
+@limiter.limit(RATE_LIMITS["fees_collect"])
 async def collect_fees(
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
