@@ -104,6 +104,9 @@ def _init_db_schema():
         _patch("users", "wallet_initialized", "wallet_initialized BOOLEAN DEFAULT FALSE NOT NULL")
         _patch("users", "total_fees_paid_cents", "total_fees_paid_cents INTEGER DEFAULT 0 NOT NULL")
 
+        # crypto_wallets table columns (new table, may be missing in production)
+        _patch("crypto_wallets", "encrypted_private_key", "encrypted_private_key BYTEA")
+
         # audit logging (user_audit_log table is created automatically via create_all)
     except Exception as e:
         print(f"[startup] schema patch pass failed (continuing): {e}")
