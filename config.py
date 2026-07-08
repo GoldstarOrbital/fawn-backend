@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     from_email: str = "alex@getfawn.com"
     admin_api_key: str = ""
+
+    # Campus Savings gas-price freshness. Prices are hand-verified (no honest
+    # free per-station feed exists), so instead of faking live data we track
+    # when they were last verified and flag staleness. Bump GAS_VERIFIED_DATE
+    # (YYYY-MM-DD) on Railway whenever you re-verify — no code change needed.
+    gas_verified_date: str = "2026-06-19"
+    gas_stale_after_days: int = 14
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     unit_webhook_secret: str = ""

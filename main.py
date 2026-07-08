@@ -203,6 +203,41 @@ async def _start_podcast_scheduler():
     asyncio.get_event_loop().create_task(_loop())
 
 
+@app.on_event("startup")
+async def _start_gas_freshness_check():
+    """Daily check of Campus Savings gas-price freshness.
+
+    Gas prices are hand-verified (no honest free per-station feed exists), so
+    this doesn't fetch prices — it re-evaluates staleness once a day and logs a
+    re-verify reminder when they exceed the threshold, so stale prices never go
+    unnoticed. The user-facing freshness badge reads the same source live via
+    GET /deals/gas-status.
+    """
+    import asyncio
+    from routers.deals import gas_freshness
+
+    async def _loop():
+        while True:
+            try:
+                f = gas_freshness()
+                if f.get("stale"):
+                    print(
+                        f"[gas] prices are {f['days_old']} days old "
+                        f"(verified {f['verified_date']}, threshold "
+                        f"{f['threshold_days']}d) — re-verify and bump "
+                        f"GAS_VERIFIED_DATE."
+                    )
+                else:
+                    print(f"[gas] freshness ok ({f.get('days_old')} days old)")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[gas] freshness check failed (will retry): {e}")
+            await asyncio.sleep(24 * 60 * 60)  # once a day
+
+    asyncio.get_event_loop().create_task(_loop())
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "0.2.0"}

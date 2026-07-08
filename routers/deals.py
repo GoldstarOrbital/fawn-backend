@@ -17,8 +17,11 @@ than auto-publishing unverified claims.
 import hmac
 import json
 import os
+from datetime import date
 from pathlib import Path
 from typing import Optional
+
+from config import settings
 
 from fastapi import APIRouter, Depends, HTTPException, Security, Request, status
 from fastapi.security.api_key import APIKeyHeader
@@ -120,6 +123,43 @@ def submit_suggestion(request: Request, body: SuggestionIn, db: Session = Depend
         {"school": body.school, "category": body.category},
     )
     return {"message": "Thanks — we'll review it and add it if it checks out.", "id": entry.id}
+
+
+def gas_freshness() -> dict:
+    """Compute how fresh the hand-verified gas prices are.
+
+    Single source of truth is settings.gas_verified_date (set via the
+    GAS_VERIFIED_DATE env var). `days_old`/`stale` recompute on every call, so
+    the freshness the site shows advances every day with no redeploy — and
+    bumping the env var when you re-verify instantly resets it to fresh.
+    """
+    try:
+        y, m, d = (int(x) for x in settings.gas_verified_date.split("-"))
+        verified = date(y, m, d)
+        days_old = (date.today() - verified).days
+        if days_old < 0:
+            days_old = 0
+        return {
+            "verified_date": settings.gas_verified_date,
+            "days_old": days_old,
+            "stale": days_old > settings.gas_stale_after_days,
+            "threshold_days": settings.gas_stale_after_days,
+        }
+    except Exception:
+        # Never let a bad config value break the endpoint — report unknown.
+        return {
+            "verified_date": settings.gas_verified_date,
+            "days_old": None,
+            "stale": False,
+            "threshold_days": settings.gas_stale_after_days,
+        }
+
+
+@router.get("/gas-status")
+def gas_status():
+    """Freshness of the Campus Savings gas prices, for the freshness badge on
+    the marketing site. Public, no auth — returns only dates/flags, no PII."""
+    return gas_freshness()
 
 
 @router.get("/schools")
