@@ -33,3 +33,22 @@ def get_current_user(
     if user is None:
         raise credentials_error
     return user
+
+
+def get_current_user_id(
+    token: str = Depends(oauth2_scheme),
+) -> str:
+    """Decode JWT and return just the user_id (for endpoints that don't need full User object)."""
+    credentials_error = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_error
+        return user_id
+    except JWTError:
+        raise credentials_error

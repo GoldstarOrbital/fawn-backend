@@ -96,7 +96,9 @@ def _init_db_schema():
         _patch("p2p_disputes", "payment_id", "payment_id VARCHAR")
 
         # crypto wallet columns — new crypto-native architecture (2026-07-08)
-        _patch("users", "crypto_wallet_address", "crypto_wallet_address VARCHAR UNIQUE")
+        # Note: crypto_wallet_address is VARCHAR (not UNIQUE) to allow schema patching on existing tables
+        # Uniqueness is enforced at the model level + in CryptoWallet table
+        _patch("users", "crypto_wallet_address", "crypto_wallet_address VARCHAR")
         _patch("users", "wallet_type", "wallet_type VARCHAR")  # non_custodial | fawn_custodial
         _patch("users", "usdc_balance_cents", "usdc_balance_cents INTEGER DEFAULT 0 NOT NULL")
         _patch("users", "wallet_initialized", "wallet_initialized BOOLEAN DEFAULT FALSE NOT NULL")

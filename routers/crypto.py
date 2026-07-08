@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, validator
 from database import get_db
-from middleware.auth import get_current_user_id
+from dependencies import get_current_user_id
 from services import crypto_wallet
 from services.analytics import capture, EVENTS
 from rate_limiting import limiter, RATE_LIMITS
