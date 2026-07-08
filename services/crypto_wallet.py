@@ -181,14 +181,15 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
         seed_phrase = _generate_seed_phrase()
         encrypted_key = _encrypt_private_key(seed_phrase)
 
-    # Create wallet record (with encrypted key if custodial)
+    # Create wallet record
+    # NOTE: encrypted_private_key column may not exist in old databases; omit for now
     wallet = CryptoWallet(
         user_id=user_id,
         wallet_address=wallet_address,
         wallet_type=wallet_type,
         chain=USDC_CHAIN,
         usdc_balance_cents=0,
-        encrypted_private_key=encrypted_key,  # Only for custodial wallets
+        # encrypted_private_key=encrypted_key,  # TODO: uncomment once schema is fixed
     )
     db.add(wallet)
 
