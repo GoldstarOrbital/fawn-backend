@@ -104,17 +104,37 @@ def _init_db_schema():
         _patch("users", "wallet_initialized", "wallet_initialized BOOLEAN DEFAULT FALSE NOT NULL")
         _patch("users", "total_fees_paid_cents", "total_fees_paid_cents INTEGER DEFAULT 0 NOT NULL")
 
-        # crypto_wallets table columns - ensure all columns exist
+        # crypto_wallets table - ensure encrypted_private_key column exists
         try:
-            # For postgres: BYTEA, for sqlite: BLOB
-            cols = {c["name"] for c in inspector.get_columns("crypto_wallets")}
-            if "encrypted_private_key" not in cols:
-                with engine.begin() as conn:
-                    # Use generic BYTEA syntax for Postgres
-                    conn.execute(text("ALTER TABLE crypto_wallets ADD COLUMN encrypted_private_key BYTEA"))
-                    print("[startup] added encrypted_private_key column to crypto_wallets")
+            with engine.begin() as conn:
+                # Check if table exists
+                result = conn.execute(text("SELECT 1 FROM information_schema.tables WHERE table_name='crypto_wallets'"))
+                table_exists = result.fetchone() is not None
+
+                if not table_exists:
+                    # Create table if it doesn't exist
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS crypto_wallets (
+                            id VARCHAR PRIMARY KEY,
+                            user_id VARCHAR NOT NULL UNIQUE,
+                            wallet_address VARCHAR NOT NULL UNIQUE,
+                            wallet_type VARCHAR NOT NULL,
+                            chain VARCHAR NOT NULL DEFAULT 'polygon',
+                            usdc_balance_cents INTEGER NOT NULL DEFAULT 0,
+                            encrypted_private_key BYTEA,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        )
+                    """))
+                    print("[startup] created crypto_wallets table")
+                else:
+                    # Table exists, ensure encrypted_private_key column exists
+                    cols = {c["name"] for c in inspector.get_columns("crypto_wallets")}
+                    if "encrypted_private_key" not in cols:
+                        conn.execute(text("ALTER TABLE crypto_wallets ADD COLUMN encrypted_private_key BYTEA"))
+                        print("[startup] added encrypted_private_key column to crypto_wallets")
         except Exception as e:
-            print(f"[startup] crypto_wallets column add failed (continuing): {e}")
+            print(f"[startup] crypto_wallets setup failed (continuing): {e}")
 
         # audit logging (user_audit_log table is created automatically via create_all)
     except Exception as e:
