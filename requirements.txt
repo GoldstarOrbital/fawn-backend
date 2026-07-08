@@ -18,3 +18,4 @@ pytest>=8.0.0
 edge-tts>=6.1.0
 tzdata>=2024.1
 mnemonic>=0.20
+cryptography>=42.0.0
