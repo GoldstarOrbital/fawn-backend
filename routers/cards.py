@@ -39,7 +39,7 @@ def _owned_card_or_404(db: Session, user_id: str, card_id: str) -> Card:
 @limiter.limit("5/minute")
 async def create_card(request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user.unit_account_id:
-        raise HTTPException(status_code=400, detail="You need an active FAWN bank account before you can get a card.")
+        raise HTTPException(status_code=400, detail="You need an initialized FAWN wallet before you can get a card.")
 
     existing = db.query(Card).filter(Card.user_id == current_user.id).first()
     if existing:

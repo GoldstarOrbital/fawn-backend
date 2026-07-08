@@ -24,25 +24,24 @@ _SIGNATURE = (
 
 def build_email_2(name: str) -> tuple[str, str]:
     """Email #2 — Day 3 — Overdraft fee explainer."""
-    subject = "The $35 fee that changed how I think about banking"
+    subject = "The truth about transfer fees nobody talks about"
     html = f"""<html><body style="{_BASE_STYLE}">
   <p>Hey {name},</p>
   <p>
-    A few years ago a friend of mine overdrafted her account by $4.
-    The bank charged her $35.
+    A friend sent USDC once and paid $5.
+    Traditional transfers cost $35.
     Not a loan repayment fee. Not interest. Just a flat $35 penalty for being $4 short for a few hours.
   </p>
   <p>
-    That's when it clicked for me: the overdraft fee isn't a safety net — it's a revenue line.
-    Banks collected over <strong>$7 billion</strong> in overdraft fees last year.
-    The people paying most of those fees? Young people, students, anyone living paycheck to paycheck.
+    That's when it clicked for me: traditional fees aren't a safety net — they're a revenue model.
+    Traditional financial services collected billions in hidden fees last year.
+    The people paying most? Users like you.
   </p>
   <p>
-    FAWN doesn't charge overdraft fees. Ever. If your balance would go negative, the transaction
-    simply declines. No surprise charges, no shame spiral — just a declined transaction you can deal with.
+    FAWN charges $0.01 flat fee per transfer. No hidden charges. No surprises. No shame spiral — just transparent costs you can control.
   </p>
   <p>
-    That's the whole idea: a bank account that doesn't make money when you're struggling.
+    That's the whole idea: a wallet that keeps your crypto safe without extracting value during your hardest times.
   </p>
   <p>More soon.</p>
   {_SIGNATURE}
@@ -56,10 +55,10 @@ def build_email_3(name: str) -> tuple[str, str]:
     html = f"""<html><body style="{_BASE_STYLE}">
   <p>Hey {name},</p>
   <p>
-    I want to be upfront about something most banks never tell you: how they make money off you.
+    I want to be upfront about something most financial platforms never tell you: their real revenue model.
   </p>
   <p>
-    Traditional banks profit from:
+    Traditional services profit from YOUR fees:
   </p>
   <ul>
     <li>Overdraft fees (~$35 a hit)</li>
@@ -87,7 +86,7 @@ def build_email_3(name: str) -> tuple[str, str]:
   </p>
   <p>
     No monthly fees. No minimum balance. No gotchas.
-    Your deposits are FDIC-insured through our banking partner, Unit.
+    USDC is held in your non-custodial or FAWN-custodial wallet, regulated by NYDFS as a stablecoin.
   </p>
   <p>That's the deal.</p>
   <p>
@@ -128,7 +127,7 @@ def build_email_4(name: str) -> tuple[str, str]:
   </p>
   <p>
     Share it in your group chat, your dorm Slack, anywhere your friends are complaining
-    about bank fees. Every signup through your link counts.
+    about transfer fees. Every signup through your link counts.
   </p>
   <p>
     Beta spots are limited — we're keeping the first cohort small so we can give

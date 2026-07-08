@@ -59,14 +59,14 @@ async def _gather(*coros):
 @router.get("/balance", response_model=AccountBalance)
 async def get_balance(current_user: User = Depends(get_current_user)):
     if not current_user.unit_account_id:
-        raise HTTPException(status_code=404, detail="No bank account linked yet.")
+        raise HTTPException(status_code=404, detail="No wallet initialized yet.")
     return await unit_svc.get_account_balance(current_user.unit_account_id)
 
 
 @router.get("/details")
 async def get_account_details(current_user: User = Depends(get_current_user)):
     if not current_user.unit_account_id:
-        raise HTTPException(status_code=404, detail="No bank account linked yet.")
+        raise HTTPException(status_code=404, detail="No wallet initialized yet.")
     return await unit_svc.get_account_details(current_user.unit_account_id)
 
 

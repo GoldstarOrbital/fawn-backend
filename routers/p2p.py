@@ -71,7 +71,7 @@ def _resolve_handle(db: Session, handle: str) -> Optional[User]:
 
 def _require_active_account(user: User):
     if not user.unit_account_id:
-        raise HTTPException(status_code=400, detail="That account doesn't have an active FAWN bank account yet.")
+        raise HTTPException(status_code=400, detail="That wallet isn't initialized yet.")
 
 
 def _scam_warning(note: Optional[str], is_new_recipient: bool) -> Optional[str]:
@@ -513,7 +513,7 @@ def dispute_transfer(request: Request, transfer_id: str, req: P2PDisputeRequest,
 
 @router.post("/external-transfers")
 async def create_external_transfer(current_user: User = Depends(get_current_user)):
-    """Send to a non-FAWN bank/card. Not live — see services/external_send.py."""
+    """Send to a non-FAWN wallet/address. Not live — see services/external_send.py."""
     provider = get_external_send_provider()
     try:
         await provider.send(

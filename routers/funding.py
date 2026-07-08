@@ -1,5 +1,4 @@
-"""Add Funds: pull money from an external bank account into a FAWN
-deposit account via ACH.
+"""Funding: deposit USDC into your FAWN wallet or trade crypto.
 
 Uses Unit's inline-counterparty ACH payment. Raw bank details are blocked
 by default because format validation does not prove that the caller owns
@@ -60,13 +59,12 @@ def _check_limits(db: Session, user_id: str, amount_cents: int):
 @limiter.limit("10/minute")
 async def add_funds(request: Request, req: AddFundsRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not current_user.unit_account_id:
-        raise HTTPException(status_code=400, detail="You need an active FAWN bank account before you can add funds.")
+        raise HTTPException(status_code=400, detail="You need an initialized FAWN wallet before you can deposit USDC.")
     if not settings.allow_unverified_ach_funding:
         raise HTTPException(
             status_code=403,
             detail=(
-                "Add Funds is temporarily disabled until external bank account "
-                "ownership verification is enabled."
+                "Funding is temporarily disabled until account verification is enabled."
             ),
         )
 
