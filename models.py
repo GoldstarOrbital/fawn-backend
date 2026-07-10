@@ -32,9 +32,6 @@ class User(Base):
     wallet_initialized = Column(Boolean, default=False, nullable=False)
     # Total platform fees paid (in cents), for analytics/reporting
     total_fees_paid_cents = Column(Integer, default=0, nullable=False)
-    # Premium tier: users with paid subscription get free transfers
-    is_premium = Column(Boolean, default=False, nullable=False)
-    premium_expires_at = Column(DateTime(timezone=True), nullable=True)
 
     # ── LEGACY BANKING FIELDS (kept for migration reference, not used) ──
     unit_customer_id = Column(String, nullable=True)
