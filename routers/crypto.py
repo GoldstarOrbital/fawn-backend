@@ -69,6 +69,20 @@ class SendUSDCRequest(BaseModel):
         return v
 
 
+class SendToUserRequest(BaseModel):
+    """Send USDC to a FAWN user by username or to an external wallet address."""
+    recipient: str = Field(..., min_length=1, max_length=255, description="Username (e.g. @maria) or 0x... wallet address")
+    amount_cents: int = Field(..., gt=0, le=999999999, description="Amount to send in cents (e.g., 1000 = $10.00)")
+    memo: str | None = Field(None, max_length=200)
+
+    @validator("memo")
+    def validate_memo(cls, v):
+        """Security: prevent null bytes and control characters in memo."""
+        if v and ("\x00" in v or any(ord(c) < 32 for c in v)):
+            raise ValueError("Memo contains invalid characters")
+        return v
+
+
 class SendToBankRequest(BaseModel):
     """Send USDC to a traditional bank account via instant Stripe Payouts.
 
@@ -221,6 +235,71 @@ async def send_usdc(
             memo=req.memo,
         )
         capture(EVENTS["TRANSFER_SENT"], user_id, {"amount_cents": req.amount_cents})
+        return result
+    except crypto_wallet.WalletNotInitialized:
+        raise HTTPException(status_code=404, detail="No stablecoin wallet. Call POST /wallet/create first.")
+    except crypto_wallet.InvalidAddress as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except crypto_wallet.InsufficientBalance as e:
+        raise HTTPException(status_code=402, detail=str(e))  # 402 = Payment Required
+
+
+@transfer_router.post("/send-unified", response_model=TransferResponse, status_code=201)
+@limiter.limit(RATE_LIMITS["transfer_send"])
+async def send_to_user_or_wallet(
+    req: SendToUserRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Send USDC to either a FAWN user (by username) or external wallet address.
+
+    Supports:
+    - @username (e.g., @maria) - P2P transfer to FAWN user
+    - 0x... wallet address - direct transfer to external wallet
+
+    Cost: flat $0.01 platform fee for both types.
+    Settlement: instant (no blockchain tx needed for FAWN users, instant for external wallets).
+    """
+    recipient = req.recipient.strip()
+
+    # Determine if this is a username or wallet address
+    if recipient.startswith("@"):
+        # P2P transfer to FAWN user by username
+        handle = recipient[1:].lower()  # remove @ and lowercase
+        from models import Handle
+        handle_row = db.query(Handle).filter(Handle.handle == handle).first()
+        if not handle_row:
+            raise HTTPException(status_code=404, detail=f"No FAWN user found with handle @{handle}.")
+
+        recipient_user = db.query(User).filter(User.id == handle_row.user_id).first()
+        if not recipient_user or not recipient_user.crypto_wallet_address:
+            raise HTTPException(status_code=404, detail=f"User @{handle} doesn't have a wallet initialized.")
+
+        if recipient_user.id == user_id:
+            raise HTTPException(status_code=400, detail="You can't send money to yourself.")
+
+        recipient_address = recipient_user.crypto_wallet_address
+    elif _validate_eth_address(recipient):
+        # External wallet address
+        recipient_address = recipient
+    else:
+        raise HTTPException(status_code=400, detail="Recipient must be either @username or 0x... wallet address")
+
+    # Execute the transfer
+    try:
+        result = await crypto_wallet.send_usdc(
+            sender_id=user_id,
+            recipient_address=recipient_address,
+            amount_cents=req.amount_cents,
+            db=db,
+            memo=req.memo,
+        )
+        capture(EVENTS["TRANSFER_SENT"], user_id, {
+            "amount_cents": req.amount_cents,
+            "recipient_type": "fawn_user" if recipient.startswith("@") else "external_wallet"
+        })
         return result
     except crypto_wallet.WalletNotInitialized:
         raise HTTPException(status_code=404, detail="No stablecoin wallet. Call POST /wallet/create first.")
