@@ -255,25 +255,29 @@ async def send_to_user_or_wallet(
     """
     Send USDC to either a FAWN user (by username) or external wallet address.
 
-    Supports:
-    - @username (e.g., @maria) - P2P transfer to FAWN user
-    - 0x... wallet address - direct transfer to external wallet
+    Fee structure:
+    - @username (FAWN user): $0.01 per transfer
+    - 0x... wallet address (external): $0.50 per transfer
 
-    Cost: flat $0.01 platform fee for both types.
-    Settlement: instant (no blockchain tx needed for FAWN users, instant for external wallets).
+    Supports:
+    - @username (e.g., @maria) - P2P transfer to FAWN user ($0.01)
+    - 0x... wallet address - direct transfer to external wallet ($0.50)
+
+    Settlement: instant.
     """
     recipient = req.recipient.strip()
+    is_internal = False
 
     # Determine if this is a username or wallet address
     if recipient.startswith("@"):
         # P2P transfer to FAWN user by username
         handle = recipient[1:].lower()  # remove @ and lowercase
-        from models import Handle
+        from models import Handle, User as UserModel
         handle_row = db.query(Handle).filter(Handle.handle == handle).first()
         if not handle_row:
             raise HTTPException(status_code=404, detail=f"No FAWN user found with handle @{handle}.")
 
-        recipient_user = db.query(User).filter(User.id == handle_row.user_id).first()
+        recipient_user = db.query(UserModel).filter(UserModel.id == handle_row.user_id).first()
         if not recipient_user or not recipient_user.crypto_wallet_address:
             raise HTTPException(status_code=404, detail=f"User @{handle} doesn't have a wallet initialized.")
 
@@ -281,9 +285,11 @@ async def send_to_user_or_wallet(
             raise HTTPException(status_code=400, detail="You can't send money to yourself.")
 
         recipient_address = recipient_user.crypto_wallet_address
+        is_internal = True  # FAWN-to-FAWN transfer = $0.01 fee
     elif _validate_eth_address(recipient):
         # External wallet address
         recipient_address = recipient
+        is_internal = False  # External transfer = $0.50 fee
     else:
         raise HTTPException(status_code=400, detail="Recipient must be either @username or 0x... wallet address")
 
@@ -295,10 +301,12 @@ async def send_to_user_or_wallet(
             amount_cents=req.amount_cents,
             db=db,
             memo=req.memo,
+            is_internal=is_internal,
         )
         capture(EVENTS["TRANSFER_SENT"], user_id, {
             "amount_cents": req.amount_cents,
-            "recipient_type": "fawn_user" if recipient.startswith("@") else "external_wallet"
+            "recipient_type": "fawn_user" if recipient.startswith("@") else "external_wallet",
+            "fee_cents": int(result["fee"] * 100),
         })
         return result
     except crypto_wallet.WalletNotInitialized:

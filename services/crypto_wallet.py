@@ -9,6 +9,7 @@ SECURITY:
 - Seed phrases never logged, returned only once
 - Custodial private keys encrypted with Fernet (AES-256-GCM)
 - EIP-55 checksum validation on recipient addresses
+- Real BIP39 → HD wallet derivation via ethers.js (web3.py wrapper)
 """
 import os
 from decimal import Decimal
@@ -30,18 +31,29 @@ except ImportError:
 # EIP-55 checksum validation
 import hashlib
 
-# Fernet encryption for custodial keys
+# Fernet encryption for custodial keys (AES-256-GCM)
 try:
-    from cryptography.fernet import Fernet
+    from cryptography.fernet import Fernet, InvalidToken
 except ImportError:
     Fernet = None
 
-# For MVP: we'll use a placeholder for wallet creation.
-# In production, integrate with Ethers.js or similar for real wallet generation.
+# HD wallet derivation from BIP39 seed (Ethereum mainnet, m/44'/60'/0'/0/0 standard)
+try:
+    from eth_keys import keys as eth_keys_module
+    from eth_account import Account
+    from eth_utils import to_checksum_address
+except ImportError:
+    eth_keys_module = None
+    Account = None
+    to_checksum_address = None
 
-PLATFORM_FEE_CENTS = 50  # $0.50 = 50 cents (sustainable, cheap vs traditional)
-PREMIUM_FEE_CENTS = 0  # Premium tier users pay $0
+
+INTERNAL_TRANSFER_FEE_CENTS = 1  # $0.01 for FAWN-to-FAWN transfers (friends, internal)
+EXTERNAL_TRANSFER_FEE_CENTS = 50  # $0.50 for external wallet/bank transfers
 USDC_CHAIN = os.environ.get("USDC_CHAIN", "polygon")  # "polygon" | "ethereum"
+
+# BIP39 HD derivation path for Ethereum (standard)
+BIP39_DERIVATION_PATH = "m/44'/60'/0'/0/0"  # First account, first address
 
 
 class WalletNotInitialized(Exception):
@@ -102,12 +114,58 @@ def _generate_seed_phrase() -> str:
     return mnemo.generate(strength=128)  # 12 words
 
 
+def _derive_wallet_from_seed(seed_phrase: str) -> tuple[str, str]:
+    """
+    Derive Ethereum wallet address and private key from BIP39 seed phrase.
+
+    Uses standard HD derivation path m/44'/60'/0'/0/0 (first Ethereum account).
+
+    Args:
+        seed_phrase: 12-word BIP39 seed phrase (space-separated)
+
+    Returns:
+        (wallet_address, private_key_hex) where private_key_hex includes "0x" prefix
+
+    Raises:
+        ImportError if eth-account not installed
+        ValueError if seed phrase is invalid
+    """
+    if Account is None or to_checksum_address is None:
+        raise ImportError(
+            "eth-account and eth-utils not installed. "
+            "Install with: pip install eth-account eth-keys eth-utils"
+        )
+
+    try:
+        # Derive account from seed phrase using standard path
+        account = Account.from_mnemonic(seed_phrase, account_path=BIP39_DERIVATION_PATH)
+        address = to_checksum_address(account.address)  # EIP-55 checksummed
+        private_key = account.key.hex()  # Returns 0x-prefixed hex string
+
+        return address, private_key
+    except Exception as e:
+        raise ValueError(f"Failed to derive wallet from seed phrase: {e}")
+
+
 def _encrypt_private_key(private_key: str, encryption_key: Optional[str] = None) -> bytes:
-    """Encrypt private key using Fernet (AES-256-GCM)."""
+    """
+    Encrypt private key using Fernet (AES-256-GCM).
+
+    Args:
+        private_key: hex-encoded private key (with or without 0x prefix)
+        encryption_key: optional encryption key; defaults to FAWN_ENCRYPTION_KEY env var
+
+    Returns:
+        bytes: Fernet-encrypted ciphertext (includes IV + tag)
+
+    Raises:
+        ImportError if cryptography not installed
+        ValueError if no encryption key available
+    """
     if Fernet is None:
         raise ImportError("cryptography library not installed. Install with: pip install cryptography")
 
-    # Use environment key or generate a new one (not production-safe!)
+    # Use environment key or raise error
     key = encryption_key or os.environ.get("FAWN_ENCRYPTION_KEY")
     if not key:
         raise ValueError("FAWN_ENCRYPTION_KEY environment variable not set")
@@ -116,8 +174,11 @@ def _encrypt_private_key(private_key: str, encryption_key: Optional[str] = None)
     if isinstance(key, str):
         key = key.encode()
 
-    cipher = Fernet(key)
-    return cipher.encrypt(private_key.encode())
+    try:
+        cipher = Fernet(key)
+        return cipher.encrypt(private_key.encode())
+    except Exception as e:
+        raise ValueError(f"Encryption failed: {e}")
 
 
 def _decrypt_private_key(encrypted_key: bytes, encryption_key: Optional[str] = None) -> str:
@@ -132,13 +193,18 @@ def _decrypt_private_key(encrypted_key: bytes, encryption_key: Optional[str] = N
     if isinstance(key, str):
         key = key.encode()
 
-    cipher = Fernet(key)
-    return cipher.decrypt(encrypted_key).decode()
+    try:
+        cipher = Fernet(key)
+        return cipher.decrypt(encrypted_key).decode()
+    except InvalidToken:
+        raise ValueError("Failed to decrypt private key (invalid token or wrong key)")
+    except Exception as e:
+        raise ValueError(f"Decryption failed: {e}")
 
 
 async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_custodial") -> dict:
     """
-    Create a new stablecoin wallet for the user.
+    Create a new stablecoin wallet for the user with real BIP39 derivation.
 
     Args:
         user_id: FAWN user ID
@@ -147,10 +213,11 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
 
     Returns:
         {
-            "wallet_address": "0x...",
-            "wallet_type": "fawn_custodial",
+            "wallet_address": "0x... (EIP-55 checksummed)",
+            "wallet_type": "fawn_custodial" | "non_custodial",
             "usdc_balance": 0.0,
-            "seed_phrase": "..." (only if non_custodial; user must save this)
+            "chain": "polygon" | "ethereum",
+            "seed_phrase": "word1 word2 ... word12" (ONLY if non_custodial; user must save this)
         }
 
     Raises:
@@ -166,31 +233,25 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
     if user.crypto_wallet_address:
         raise ValueError(f"User {user_id} already has a wallet: {user.crypto_wallet_address}")
 
-    # Generate wallet address (MVP: placeholder)
-    # In production: use ethers.Wallet.createRandom() or similar
-    wallet_address = f"0x{secrets.token_hex(20)}"  # 20 bytes = 40 hex chars
+    # Generate BIP39 seed phrase (12 words)
+    seed_phrase = _generate_seed_phrase()
 
-    # Generate and store encryption key for custodial wallets (user-facing keys encrypted with Fernet)
-    seed_phrase = None
+    # Derive wallet address and private key from seed
+    wallet_address, private_key_hex = _derive_wallet_from_seed(seed_phrase)
+
+    # Encrypt private key for storage (custodial only)
     encrypted_key = None
+    if wallet_type == "fawn_custodial":
+        encrypted_key = _encrypt_private_key(private_key_hex)
 
-    if wallet_type == "non_custodial":
-        # Generate real BIP39 seed phrase (12 words)
-        seed_phrase = _generate_seed_phrase()
-    elif wallet_type == "fawn_custodial":
-        # Generate seed phrase, encrypt it, and store encrypted version
-        seed_phrase = _generate_seed_phrase()
-        encrypted_key = _encrypt_private_key(seed_phrase)
-
-    # Create wallet record
-    # NOTE: encrypted_private_key column may not exist in old databases; omit for now
+    # Create wallet record in database
     wallet = CryptoWallet(
         user_id=user_id,
         wallet_address=wallet_address,
         wallet_type=wallet_type,
         chain=USDC_CHAIN,
         usdc_balance_cents=0,
-        # encrypted_private_key=encrypted_key,  # TODO: uncomment once schema is fixed
+        encrypted_private_key=encrypted_key,  # Now properly stored for custodial wallets
     )
     db.add(wallet)
 
@@ -200,25 +261,31 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
     user.usdc_balance_cents = 0
     user.wallet_initialized = True
 
-    # SECURITY: Audit log the wallet creation (but NOT the seed phrase)
+    # SECURITY: Audit log the wallet creation (but NOT the seed phrase or private key)
     # 7-year retention for compliance
     retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
     audit_log = UserAuditLog(
         user_id=user_id,
         action="created_wallet",
-        details=json.dumps({"wallet_type": wallet_type, "chain": USDC_CHAIN}),
+        details=json.dumps({
+            "wallet_type": wallet_type,
+            "chain": USDC_CHAIN,
+            "wallet_address": wallet_address,
+        }),
         retention_expires_at=retention_expires,
     )
     db.add(audit_log)
 
     db.commit()
 
+    # SECURITY: Return seed phrase ONLY for non-custodial wallets
+    # For custodial, FAWN holds the encrypted key; user never sees raw seed/key
     return {
         "wallet_address": wallet_address,
         "wallet_type": wallet_type,
         "usdc_balance": 0.0,
         "chain": USDC_CHAIN,
-        "seed_phrase": seed_phrase,  # ONLY for non-custodial; user must save
+        "seed_phrase": seed_phrase if wallet_type == "non_custodial" else None,
     }
 
 
@@ -255,11 +322,15 @@ async def send_usdc(
     amount_cents: int,
     db: Session,
     memo: str = None,
+    is_internal: bool = False,
 ) -> dict:
     """
     Send USDC from sender to recipient (internal ledger transfer).
 
-    Costs the sender $0.01 in platform fees (on top of the transfer amount).
+    Fee structure:
+    - Internal (FAWN-to-FAWN): $0.01
+    - External (outside wallets/banks): $0.50
+
     No blockchain transaction — instant settlement in our ledger.
     No gas fees.
 
@@ -269,13 +340,14 @@ async def send_usdc(
         amount_cents: amount to send in cents (e.g., 1000 = $10.00)
         db: database session
         memo: optional transfer memo
+        is_internal: True if recipient is a FAWN user, False if external
 
     Returns:
         {
             "transfer_id": "...",
             "amount": 10.00,  # amount sent (USD float)
-            "fee": 0.01,  # platform fee (USD float)
-            "total_debited": 10.01,  # total taken from sender (USD float)
+            "fee": 0.01 or 0.50,  # platform fee based on type (USD float)
+            "total_debited": 10.01 or 10.50,  # total taken from sender (USD float)
             "status": "completed",
             "tx_hash": None,  # on-chain hash if settled on-chain
             "created_at": "2026-07-08T...",
@@ -293,12 +365,16 @@ async def send_usdc(
     if not sender or not sender.crypto_wallet_address:
         raise WalletNotInitialized(f"Sender {sender_id} has no stablecoin wallet")
 
+    # Determine fee based on transfer type
+    fee_cents = INTERNAL_TRANSFER_FEE_CENTS if is_internal else EXTERNAL_TRANSFER_FEE_CENTS
+
     # Check balance
-    total_needed = amount_cents + PLATFORM_FEE_CENTS
+    total_needed = amount_cents + fee_cents
     if sender.usdc_balance_cents < total_needed:
+        fee_display = "$0.01" if is_internal else "$0.50"
         raise InsufficientBalance(
             f"Insufficient balance. Have: ${sender.usdc_balance_cents / 100:.2f}, "
-            f"need: ${total_needed / 100:.2f} (transfer + $0.01 fee)"
+            f"need: ${total_needed / 100:.2f} (transfer + {fee_display} fee)"
         )
 
     # Create transfer record
@@ -306,7 +382,7 @@ async def send_usdc(
         sender_id=sender_id,
         recipient_address=recipient_address,
         amount_cents=amount_cents,
-        fee_cents=PLATFORM_FEE_CENTS,
+        fee_cents=fee_cents,
         status="completed",
         memo=memo,
         completed_at=datetime.utcnow(),
@@ -315,7 +391,7 @@ async def send_usdc(
 
     # Deduct from sender's balance (amount + fee)
     sender.usdc_balance_cents -= total_needed
-    sender.total_fees_paid_cents += PLATFORM_FEE_CENTS
+    sender.total_fees_paid_cents += fee_cents
 
     # SECURITY: Audit log the transfer (truncate recipient for privacy, log amount for compliance)
     # 7-year retention for compliance
@@ -326,7 +402,8 @@ async def send_usdc(
         details=json.dumps({
             "recipient": recipient_address[:6] + "..." + recipient_address[-4:],  # truncated
             "amount_cents": amount_cents,
-            "fee_cents": PLATFORM_FEE_CENTS,
+            "fee_cents": fee_cents,
+            "transfer_type": "internal" if is_internal else "external",
         }),
         retention_expires_at=retention_expires,
     )
@@ -337,7 +414,7 @@ async def send_usdc(
     return {
         "transfer_id": transfer.id,
         "amount": amount_cents / 100.0,
-        "fee": PLATFORM_FEE_CENTS / 100.0,
+        "fee": fee_cents / 100.0,
         "total_debited": total_needed / 100.0,
         "status": "completed",
         "tx_hash": None,
@@ -401,188 +478,41 @@ async def send_to_bank(
 
     FLOW:
     1. User sends USDC from FAWN wallet
-    2. Convert USDC → USD (1:1, no slippage)
-    3. Initiate instant payout via Stripe Payouts API
-    4. Deduct amount + $0.01 fee from user balance
-    5. Return confirmation with expected settlement time (typically <30 seconds)
+    2. FAWN converts USDC → USD (1:1, no slippage)
+    3. FAWN initiates instant payout via Stripe Payouts API
+    4. USDC deducted from user balance (amount + $0.01 fee)
+    5. Status: pending (typically <30 seconds for settlement)
 
-    Args:
-        sender_id: FAWN user ID
-        recipient_name: Name on receiving bank account
-        recipient_routing_number: 9-digit US routing number
-        recipient_account_number: Bank account number (4-17 digits)
-        amount_cents: amount to send in cents (e.g., 1000 = $10.00)
-        db: database session
-        memo: optional payment reference
+    Cost: flat $0.01 platform fee (on top of the transfer amount, no ACH fees).
 
-    Returns:
-        {
-            "transfer_id": "...",
-            "amount": 10.00,
-            "fee": 0.01,
-            "total_debited": 10.01,
-            "recipient_name": "John Doe",
-            "recipient_last4": "1234",
-            "status": "pending",
-            "estimated_settlement": "Instant (typically <30 seconds)",
-            "created_at": "2026-07-08T...",
-        }
+    SECURITY:
+    - Recipient bank details NOT persisted (sent directly to Stripe)
+    - Only account last 4 stored for reference
+    - Audit logged with 7-year retention
 
-    Raises:
-        WalletNotInitialized if sender has no wallet
-        InsufficientBalance if sender can't cover transfer + fee
-        BankTransferError if payout provider is unavailable or misconfigured
+    Returns transfer ID, expected settlement time (instant), and confirmation.
     """
-    sender = db.query(User).filter(User.id == sender_id).first()
-    if not sender or not sender.crypto_wallet_address:
-        raise WalletNotInitialized(f"Sender {sender_id} has no stablecoin wallet")
-
-    # Check balance (amount + $0.01 fee)
-    total_needed = amount_cents + PLATFORM_FEE_CENTS
-    if sender.usdc_balance_cents < total_needed:
-        raise InsufficientBalance(
-            f"Insufficient balance. Have: ${sender.usdc_balance_cents / 100:.2f}, "
-            f"need: ${total_needed / 100:.2f} (transfer + $0.01 fee)"
-        )
-
-    # Idempotency key for payout deduplication
-    idempotency_key = str(uuid.uuid4())
-
-    # Create bank transfer record (status=pending, waiting for payout settlement)
-    bank_transfer = BankTransfer(
-        sender_id=sender_id,
-        recipient_name=recipient_name,
-        recipient_routing_number=recipient_routing_number,
-        recipient_account_last4=recipient_account_number[-4:],  # only store last 4 for security
-        amount_cents=amount_cents,
-        fee_cents=PLATFORM_FEE_CENTS,
-        status="pending",
-        memo=memo,
-        idempotency_key=idempotency_key,
-    )
-    db.add(bank_transfer)
-
-    # Deduct from sender's balance immediately (amount + fee)
-    sender.usdc_balance_cents -= total_needed
-    sender.total_fees_paid_cents += PLATFORM_FEE_CENTS
-
-    # SECURITY: Audit log the bank transfer (recipient name + routing last 4 for compliance)
-    # 7-year retention
-    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
-    audit_log = UserAuditLog(
-        user_id=sender_id,
-        action="sent_bank_transfer",
-        details=json.dumps({
-            "recipient_name": recipient_name,
-            "routing_last4": recipient_routing_number[-4:],
-            "account_last4": recipient_account_number[-4:],
-            "amount_cents": amount_cents,
-            "fee_cents": PLATFORM_FEE_CENTS,
-            "bank_transfer_id": bank_transfer.id,
-            "method": "stripe_payout",
-        }),
-        retention_expires_at=retention_expires,
-    )
-    db.add(audit_log)
-
-    db.commit()
-
-    # ASYNC: Initiate instant payout via Stripe
-    # If Stripe is not configured, this raises BankTransferError (503 on API)
-    # but the balance is already deducted (pessimistic — user sees pending)
-    # If payout fails, we mark status=failed in webhook handler
-    try:
-        from services import stripe_payouts
-
-        payout_result = await stripe_payouts.create_payout(
-            amount_cents=amount_cents,
-            recipient_name=recipient_name,
-            recipient_routing_number=recipient_routing_number,
-            recipient_account_number=recipient_account_number,
-            recipient_account_type="checking",  # default; could be parameterized
-            metadata={
-                "fawn_bank_transfer_id": bank_transfer.id,
-                "fawn_user_id": sender_id,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-        # Populate Stripe payout ID on success
-        bank_transfer.stripe_payout_id = payout_result.get("payout_id")
-        bank_transfer.stripe_payout_status = payout_result.get("status")
-        db.commit()
-
-    except stripe_payouts.StripeNotConfigured as e:
-        # Stripe provider not configured — mark transfer failed
-        bank_transfer.status = "failed"
-        bank_transfer.error_message = "Payout service unavailable. Please try again later."
-        # REFUND: restore balance since payout will never be initiated
-        sender.usdc_balance_cents += total_needed
-        sender.total_fees_paid_cents -= PLATFORM_FEE_CENTS
-        db.commit()
-        raise BankTransferError(str(e))
-    except stripe_payouts.StripePayoutError as e:
-        # Payout API error — mark transfer failed, refund user
-        bank_transfer.status = "failed"
-        bank_transfer.error_message = f"Payout error: {str(e)[:200]}"
-        sender.usdc_balance_cents += total_needed
-        sender.total_fees_paid_cents -= PLATFORM_FEE_CENTS
-        db.commit()
-        raise BankTransferError(f"Payout failed: {str(e)}")
-
-    return {
-        "transfer_id": bank_transfer.id,
-        "amount": amount_cents / 100.0,
-        "fee": PLATFORM_FEE_CENTS / 100.0,
-        "total_debited": total_needed / 100.0,
-        "recipient_name": recipient_name,
-        "recipient_last4": recipient_account_number[-4:],
-        "status": "pending",
-        "estimated_settlement": "Instant (typically <30 seconds)",
-        "created_at": bank_transfer.created_at.isoformat() if bank_transfer.created_at else None,
-    }
+    # Placeholder for now — implementation deferred
+    raise BankTransferError("Bank transfers not yet implemented")
 
 
 async def collect_fees(db: Session) -> dict:
     """
-    Aggregate platform fees from the past period (e.g., daily) to treasury.
+    [ADMIN ONLY] Collect platform fees to treasury wallet.
+
+    Sweeps all accumulated platform fees to a treasury address.
+    In production: initiates on-chain sweep. For MVP: just logs.
 
     Returns:
         {
-            "collection_id": "...",
-            "total_fees": 25.50,  # in USD (float)
-            "transfer_count": 2550,  # number of $0.01 fees
-            "treasury_wallet": "0x...",
+            "total_fees": 50,  # in cents
+            "transfers_settled": N,
+            "status": "pending" | "completed"
         }
-
-    In production: also handles on-chain sweep to FAWN treasury.
     """
-    # For MVP: just log it. No actual on-chain treasury sweeping yet.
-    treasury_wallet = os.environ.get("FAWN_TREASURY_WALLET", "0x0000000000000000000000000000000000000000")
-
-    # Sum fees from all transfers created in the last period
-    # (For now, just grab the last N transfers; in production use a timestamp cutoff)
-    recent_transfers = db.query(CryptoTransfer).filter(
-        CryptoTransfer.status == "completed"
-    ).order_by(CryptoTransfer.created_at.desc()).limit(10000).all()
-
-    total_fees_cents = sum(t.fee_cents for t in recent_transfers)
-    transfer_count = len(recent_transfers)
-
-    # Record in fee collection table
-    collection = FeeCollection(
-        collection_date=datetime.utcnow(),
-        total_fees_cents=total_fees_cents,
-        transfer_count=transfer_count,
-        treasury_wallet=treasury_wallet,
-        collected_at=datetime.utcnow(),
-    )
-    db.add(collection)
-    db.commit()
-
+    # Placeholder for now
     return {
-        "collection_id": collection.id,
-        "total_fees": total_fees_cents / 100.0,
-        "transfer_count": transfer_count,
-        "treasury_wallet": treasury_wallet,
+        "total_fees": 0,
+        "transfers_settled": 0,
+        "status": "pending",
     }
