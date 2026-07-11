@@ -38,4 +38,9 @@ RATE_LIMITS = {
     "investing_watchlist_delete": "100/hour",  # Watchlist deletes are cheap
     "investing_positions": "60/minute",  # Position reads are safe
     "investing_orders": "60/minute",  # Order history reads are safe
+
+    # Trading operations (Uniswap on Polygon)
+    "trading_quote": "30/minute",  # Quote lookups are lightweight (frequent OK, max 100/day per code)
+    "trading_execute": "10/minute",  # Execute is critical path (max 100/day per code, but per-minute rate OK)
+    "trading_history": "30/minute",  # History reads are safe
 }

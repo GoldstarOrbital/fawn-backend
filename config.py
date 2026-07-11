@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     allow_unsigned_unit_webhooks: bool = False
     allow_unsigned_column_webhooks: bool = False
     allow_unsigned_lithic_webhooks: bool = False
+    fawn_encryption_key: str = ""  # Encryption key for custodial wallet private keys
+    uniswap_api_key: str = ""  # Uniswap v3 API key for trading quotes
     allowed_origins: str = (
         "https://goldstarorbital.com,"
         "https://www.goldstarorbital.com,"

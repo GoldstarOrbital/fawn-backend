@@ -575,3 +575,69 @@ class UserAuditLog(Base):
     __table_args__ = (
         Index('idx_audit_log_user_date', 'user_id', 'created_at'),
     )
+
+
+class CryptoTrade(Base):
+    """A cryptocurrency token swap trade via Uniswap on Polygon.
+
+    Tracks all user trades: price quotes, executed trades, and settlement status.
+    Each trade charges a $0.01 flat platform fee on top of Uniswap gas costs.
+
+    States:
+    - quote: User requested a price quote (no money debited)
+    - pending: Trade submitted, awaiting user signature or blockchain confirmation
+    - completed: Trade confirmed and settled
+    - failed: Transaction failed or was rejected by user
+    - cancelled: User cancelled before signing
+
+    Rate limited to 100 trades per day per user.
+    """
+    __tablename__ = "crypto_trades"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    # Trade pair
+    from_token = Column(String, nullable=False)  # symbol: USDC, ETH, MATIC, etc
+    to_token = Column(String, nullable=False)
+
+    # Amounts (in cents for USD-like tokens, wei-compatible for others)
+    from_amount_cents = Column(Integer, nullable=False)  # what user sent
+    to_amount_cents = Column(Integer, nullable=True)  # what user received (null until confirmed)
+    expected_to_amount_cents = Column(Integer, nullable=False)  # quoted amount (slippage-adjusted)
+
+    # Pricing & fees
+    price_per_unit = Column(String, nullable=False)  # human-readable price (e.g., "$2511.55")
+    slippage_tolerance_percent = Column(String, default="0.50", nullable=False)  # user's allowed slippage
+    slippage_applied_percent = Column(String, nullable=True)  # actual slippage after execution
+    platform_fee_cents = Column(Integer, default=100, nullable=False)  # $0.01 = 100 cents
+    gas_estimate_cents = Column(Integer, nullable=True)  # Uniswap gas cost estimate
+    actual_gas_used_cents = Column(Integer, nullable=True)  # actual after tx confirmed
+    total_cost_cents = Column(Integer, nullable=True)  # fee + gas combined (fee + gas estimate at quote time)
+
+    # Trade execution
+    status = Column(String, default="quote", nullable=False, index=True)
+    # quote | pending | completed | failed | cancelled
+    tx_hash = Column(String, nullable=True, unique=True, index=True)  # blockchain transaction hash
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)  # prevent duplicate submits
+
+    # P&L tracking (for history view)
+    value_now_cents = Column(Integer, nullable=True)  # current market value of received tokens
+    gain_loss_cents = Column(Integer, nullable=True)  # market value - investment (USD cents)
+    gain_loss_percent = Column(String, nullable=True)  # percentage change
+
+    # Audit & error handling
+    error_message = Column(String, nullable=True)  # if status=failed, why?
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    submitted_at = Column(DateTime(timezone=True), nullable=True)  # when user signed
+    completed_at = Column(DateTime(timezone=True), nullable=True)  # when tx confirmed
+
+    # Constraints and indexes
+    __table_args__ = (
+        CheckConstraint("from_amount_cents > 0"),
+        CheckConstraint("expected_to_amount_cents > 0"),
+        CheckConstraint("status IN ('quote', 'pending', 'completed', 'failed', 'cancelled')"),
+        Index('idx_crypto_trade_user_created', 'user_id', 'created_at'),
+        Index('idx_crypto_trade_user_status', 'user_id', 'status'),
+        Index('idx_crypto_trade_pending', 'status', 'created_at'),
+    )

@@ -12,7 +12,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook, crypto
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook, crypto, trading
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -221,6 +221,9 @@ app.include_router(crypto.router)
 app.include_router(crypto.transfer_router)
 app.include_router(crypto.user_router)  # user data export, deletion
 app.include_router(crypto.admin_router)
+
+# Trading (Uniswap swaps on Polygon)
+app.include_router(trading.router)
 
 
 @app.on_event("startup")
