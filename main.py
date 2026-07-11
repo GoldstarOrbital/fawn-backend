@@ -12,7 +12,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook, crypto, trading
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook, crypto, trading, admin_credit
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -225,6 +225,9 @@ app.include_router(crypto.admin_router)
 # Trading (Uniswap swaps on Polygon)
 app.include_router(trading.router)
 
+# Admin utilities (manual balance credit for deposits, fee collection)
+app.include_router(admin_credit.router)
+
 
 @app.on_event("startup")
 async def _start_podcast_scheduler():
@@ -256,6 +259,19 @@ async def _start_podcast_scheduler():
                 await asyncio.sleep(300)  # don't tight-loop on repeated failures
 
     asyncio.get_event_loop().create_task(_loop())
+
+
+@app.on_event("startup")
+async def _start_blockchain_monitor():
+    """Start the Polygon USDC transfer monitor.
+
+    Listens for incoming transfers and auto-credits user balances.
+    """
+    import asyncio
+    from services.blockchain_monitor import start_blockchain_monitor
+
+    task = start_blockchain_monitor()
+    print("[blockchain] Monitor task started")
 
 
 @app.on_event("startup")
