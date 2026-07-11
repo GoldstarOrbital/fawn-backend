@@ -137,6 +137,9 @@ def _derive_wallet_from_seed(seed_phrase: str) -> tuple[str, str]:
         )
 
     try:
+        # Enable hdwallet features (required by eth-account for mnemonic support)
+        Account.enable_unaudited_hdwallet_features()
+
         # Derive account from seed phrase using standard path
         account = Account.from_mnemonic(seed_phrase, account_path=BIP39_DERIVATION_PATH)
         address = to_checksum_address(account.address)  # EIP-55 checksummed

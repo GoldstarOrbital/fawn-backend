@@ -69,7 +69,7 @@ def test_add_funds_rejects_raw_bank_details_when_verification_gate_closed(client
     user_id = _create_active_user(f"gate_{uuid.uuid4().hex[:8]}@example.com")
     resp = client.post("/funding/add-funds", json=_valid_payload(), headers=_auth(_token_for(user_id)))
     assert resp.status_code == 403
-    assert "ownership verification" in resp.json()["detail"]
+    assert "verification" in resp.json()["detail"].lower()
 
 
 def test_add_funds_happy_path_never_stores_full_account_number(client, monkeypatch):

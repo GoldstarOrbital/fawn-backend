@@ -9,6 +9,15 @@ import tempfile
 
 import pytest
 
+# Configure pytest-asyncio for async test support
+pytest_plugins = ('pytest_asyncio',)
+
+# Mark all async tests to use asyncio by default
+def pytest_collection_modifyitems(items):
+    for item in items:
+        if 'asyncio' in item.keywords:
+            item.add_marker(pytest.mark.asyncio)
+
 # Must happen before `config`/`database`/`main` are imported anywhere,
 # since `settings = Settings()` is evaluated at import time.
 _TMP_DB_FD, _TMP_DB_PATH = tempfile.mkstemp(suffix=".db")
@@ -18,6 +27,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DB_PATH}"
 os.environ["JWT_SECRET"] = "test_jwt_secret_for_pytest_only_not_real_1234567890"
 os.environ["ADMIN_API_KEY"] = "test-admin-key-12345"
 os.environ["UNIT_API_TOKEN"] = "UNIT_TOKEN_NOT_SET"  # keep Unit calls disabled in tests
+os.environ["FAWN_ENCRYPTION_KEY"] = "edzuJ-9t-uxVVZBGj9ZrQxFumrvuwwcW7sRrM-MuRpU="  # test encryption key
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -48,3 +58,12 @@ def client():
 @pytest.fixture()
 def admin_key():
     return os.environ["ADMIN_API_KEY"]
+
+
+@pytest.fixture()
+def db():
+    """Provide a test database session for each test."""
+    from database import SessionLocal
+    session = SessionLocal()
+    yield session
+    session.close()
