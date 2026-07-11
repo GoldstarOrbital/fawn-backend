@@ -24,6 +24,7 @@ from schemas import (
 from config import settings
 from dependencies import get_current_user
 from services import unit as unit_svc
+from services.crypto_wallet import create_wallet, WalletNotInitialized
 from rate_limiting import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -242,3 +243,44 @@ def reset_password(request: Request, req: ResetPasswordRequest, db: Session = De
     db.commit()
 
     return {"message": "Password updated. You can now log in."}
+
+
+@router.post("/wallets/create")
+async def create_user_wallet(
+    wallet_type: str = "fawn_custodial",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a new stablecoin wallet for the current user.
+
+    Args:
+        wallet_type: "fawn_custodial" (FAWN holds keys) or "non_custodial" (user holds keys)
+
+    Returns:
+        {
+            "wallet_address": "0x...",
+            "wallet_type": "fawn_custodial",
+            "usdc_balance": 0.0,
+            "chain": "ethereum",
+            "seed_phrase": "..." (only if wallet_type == "non_custodial")
+        }
+
+    Note: seed_phrase is ONLY returned once. User must save it immediately.
+    """
+    if wallet_type not in ("fawn_custodial", "non_custodial"):
+        raise HTTPException(status_code=400, detail="Invalid wallet_type")
+
+    if current_user.crypto_wallet_address:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User already has a wallet: {current_user.crypto_wallet_address}. Cannot create a second wallet."
+        )
+
+    try:
+        wallet_data = await create_wallet(current_user.id, db, wallet_type=wallet_type)
+        return wallet_data
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Wallet creation failed: {str(e)}")
