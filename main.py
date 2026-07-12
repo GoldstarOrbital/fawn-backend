@@ -74,6 +74,7 @@ def _init_db_schema():
         # users columns added after initial schema
         _patch("users", "referral_code", "referral_code VARCHAR")
         _patch("users", "referred_by", "referred_by VARCHAR")
+        _patch("users", "username", "username VARCHAR UNIQUE")
         _patch("users", "referral_count", "referral_count INTEGER DEFAULT 0 NOT NULL")
         _patch("users", "phone", "phone VARCHAR")
         _patch("users", "is_student", "is_student BOOLEAN DEFAULT FALSE")
