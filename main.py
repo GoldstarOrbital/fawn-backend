@@ -264,15 +264,14 @@ async def _start_podcast_scheduler():
 
 @app.on_event("startup")
 async def _start_blockchain_monitor():
-    """Start the Polygon USDC transfer monitor.
+    """DISABLED: Blockchain monitor requires proper RPC endpoint.
 
-    Listens for incoming transfers and auto-credits user balances.
+    Free public RPCs (polygon-rpc.com) are rate-limited.
+    To enable: Set POLYGON_RPC_URL to Alchemy/Infura endpoint on Railway.
+
+    For now, use manual /admin/credit-balance endpoint for Ramp deposits.
     """
-    import asyncio
-    from services.blockchain_monitor import start_blockchain_monitor
-
-    task = start_blockchain_monitor()
-    print("[blockchain] Monitor task started")
+    print("[blockchain] Monitor disabled (RPC rate-limited). Use manual credit endpoint.")
 
 
 @app.on_event("startup")
