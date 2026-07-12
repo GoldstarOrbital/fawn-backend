@@ -1,8 +1,8 @@
 """
-Blockchain monitor for Polygon USDC transfers.
+Blockchain monitor for Polygon USDC transfers (simplified version).
 
-Listens for incoming USDC transfers to user wallets and auto-credits balances.
-Runs as a background task on Railway. Queries every 30 seconds for new transfers.
+Queries user's USDC balance on-chain every 60 seconds and credits difference.
+More reliable than log-based approach for high-latency/rate-limited RPCs.
 """
 import asyncio
 import os
@@ -14,192 +14,139 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import User, UserAuditLog
 
-# Polygon chain configs
-POLYGON_MAINNET_RPC = "https://polygon-rpc.com"
-POLYGON_MUMBAI_RPC = "https://rpc-mumbai.maticvigil.com"
-
-# USDC contract on Polygon mainnet
+# Polygon Mainnet
+POLYGON_RPC = "https://polygon-rpc.com"
 USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99a7a9449Aa84174"
 
-# Batch size for eth_getLogs calls
-BATCH_SIZE = 1000
-
-# Track processed tx hashes to avoid double-crediting
-_PROCESSED_TXS = set()
-
-
-def _get_rpc_url() -> str:
-    """Get the appropriate RPC URL based on network."""
-    network = os.environ.get("POLYGON_NETWORK", "mainnet").lower()
-    if "mumbai" in network or "testnet" in network:
-        return POLYGON_MUMBAI_RPC
-    return POLYGON_MAINNET_RPC
+# Track last known on-chain balance per user to detect changes
+_LAST_BALANCE_CACHE = {}
 
 
 async def _call_rpc(method: str, params: list) -> dict:
-    """Make a JSON-RPC call to Polygon."""
-    rpc_url = _get_rpc_url()
-    payload = {
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": params,
-        "id": 1,
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    """Make a JSON-RPC call with retry logic."""
+    for attempt in range(3):
         try:
-            response = await client.post(rpc_url, json=payload)
-            response.raise_for_status()
-            result = response.json()
-            if "error" in result:
-                print(f"[blockchain] RPC error: {result['error']}")
-                return None
-            return result.get("result")
+            payload = {
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+                "id": 1,
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(POLYGON_RPC, json=payload)
+                response.raise_for_status()
+                result = response.json()
+                if "error" in result:
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+                        continue
+                    print(f"[blockchain] RPC error: {result['error']}")
+                    return None
+                return result.get("result")
         except Exception as e:
-            print(f"[blockchain] RPC call failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(1)
+                continue
+            print(f"[blockchain] RPC failed (attempt {attempt+1}/3): {e}")
             return None
-
-
-async def _get_latest_block() -> Optional[int]:
-    """Get the latest block number on Polygon."""
-    result = await _call_rpc("eth_blockNumber", [])
-    if result:
-        return int(result, 16)
     return None
 
 
-async def _get_logs(
-    from_block: int,
-    to_block: int,
-    address: str = USDC_CONTRACT,
-    topic0: str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",  # Transfer event
-) -> list:
-    """Fetch transfer logs in a block range."""
-    result = await _call_rpc("eth_getLogs", [
+async def _get_usdc_balance(wallet_address: str) -> Optional[int]:
+    """Query user's USDC balance on Polygon using eth_call."""
+    # balanceOf(address) signature
+    method_sig = "0x70a08231"  # keccak256("balanceOf(address)")
+    padded_addr = wallet_address.lower().replace("0x", "").zfill(64)
+    call_data = method_sig + padded_addr
+
+    result = await _call_rpc("eth_call", [
         {
-            "fromBlock": hex(from_block),
-            "toBlock": hex(to_block),
-            "address": address,
-            "topics": [topic0],
-        }
+            "to": USDC_CONTRACT,
+            "data": call_data,
+        },
+        "latest",
     ])
-    return result if result else []
+
+    if result and result.startswith("0x"):
+        try:
+            balance_wei = int(result, 16)
+            balance_cents = balance_wei // (10 ** 6)  # USDC has 6 decimals
+            return balance_cents
+        except Exception as e:
+            print(f"[blockchain] Failed to parse balance: {e}")
+            return None
+    return None
 
 
-async def _process_transfer(log: dict, db: Session) -> bool:
+async def _check_and_credit_balance(wallet_address: str, db: Session) -> bool:
     """
-    Process a single transfer log.
-
-    Returns True if credited, False if already processed or no matching user.
+    Check on-chain USDC balance and credit difference to user if higher than our ledger.
+    Returns True if credited something.
     """
-    tx_hash = log["transactionHash"]
-
-    # Skip if already processed
-    if tx_hash in _PROCESSED_TXS:
+    on_chain_balance = await _get_usdc_balance(wallet_address)
+    if on_chain_balance is None:
         return False
 
-    # Parse log data
-    # Transfer event: indexed(from), indexed(to), value
-    # topics[0] = keccak256("Transfer(address,indexed address,indexed address,uint256)")
-    # topics[1] = from_address (padded)
-    # topics[2] = to_address (padded)
-    # data = amount (uint256)
-
-    if len(log.get("topics", [])) < 3:
-        return False
-
-    to_address = "0x" + log["topics"][2][-40:]  # Extract address from topic
-    amount_hex = log.get("data", "0x0")
-    try:
-        amount_cents = int(amount_hex, 16) // (10 ** 6)  # USDC has 6 decimals, convert to cents
-    except (ValueError, TypeError):
-        return False
-
-    if amount_cents <= 0:
-        return False
-
-    # Find user with this wallet
     user = db.query(User).filter(
-        User.crypto_wallet_address.ilike(to_address)
+        User.crypto_wallet_address.ilike(wallet_address)
     ).first()
 
     if not user:
-        print(f"[blockchain] Transfer to unknown wallet {to_address}: {amount_cents}¢")
         return False
 
-    # Credit the user
-    old_balance = user.usdc_balance_cents
-    user.usdc_balance_cents += amount_cents
+    ledger_balance = user.usdc_balance_cents
+    difference = on_chain_balance - ledger_balance
 
-    # Create audit log
-    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
-    audit = UserAuditLog(
-        user_id=user.id,
-        action="blockchain_usdc_deposit",
-        details=json.dumps({
-            "tx_hash": tx_hash,
-            "wallet": to_address,
-            "amount_cents": amount_cents,
-            "old_balance_cents": old_balance,
-            "new_balance_cents": user.usdc_balance_cents,
-            "block_number": log.get("blockNumber"),
-        }),
-        retention_expires_at=retention_expires,
-    )
-    db.add(audit)
-    db.commit()
+    # Only credit if on-chain is higher (deposit detected)
+    if difference > 0:
+        old_balance = user.usdc_balance_cents
+        user.usdc_balance_cents = on_chain_balance
 
-    print(f"[blockchain] ✓ Credited {user.email}: ${amount_cents/100:.2f} (tx: {tx_hash[:10]}...)")
-    _PROCESSED_TXS.add(tx_hash)
-    return True
+        retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
+        audit = UserAuditLog(
+            user_id=user.id,
+            action="blockchain_usdc_deposit_detected",
+            details=json.dumps({
+                "wallet": wallet_address,
+                "on_chain_balance_cents": on_chain_balance,
+                "ledger_balance_cents": old_balance,
+                "difference_cents": difference,
+                "new_balance_cents": user.usdc_balance_cents,
+                "timestamp": datetime.utcnow().isoformat(),
+            }),
+            retention_expires_at=retention_expires,
+        )
+        db.add(audit)
+        db.commit()
+
+        print(f"[blockchain] ✓ Detected deposit for {user.email}: +${difference/100:.2f}")
+        return True
+
+    return False
 
 
 async def _monitor_loop():
-    """Main monitor loop: check for transfers every 30 seconds."""
-    print("[blockchain] Starting USDC transfer monitor on Polygon...")
-
-    last_block = None
-    check_interval = 30  # seconds
+    """Main monitor loop: check all users' on-chain balances every 60 seconds."""
+    print("[blockchain] Starting USDC balance monitor on Polygon...")
+    check_interval = 60  # seconds
 
     while True:
         try:
-            latest = await _get_latest_block()
-            if not latest:
-                print("[blockchain] Could not fetch latest block, retrying...")
-                await asyncio.sleep(check_interval)
-                continue
-
-            if last_block is None:
-                # First run: start from current block (no backlog)
-                last_block = latest
-                print(f"[blockchain] Starting from block {last_block}")
-                await asyncio.sleep(check_interval)
-                continue
-
-            if latest <= last_block:
-                # No new blocks yet
-                await asyncio.sleep(check_interval)
-                continue
-
-            # Fetch logs in batches (RPC limit ~5000 per call)
-            print(f"[blockchain] Scanning blocks {last_block+1} to {latest}...")
             db = SessionLocal()
             try:
-                batch_start = last_block + 1
-                while batch_start <= latest:
-                    batch_end = min(batch_start + BATCH_SIZE, latest)
-                    logs = await _get_logs(batch_start, batch_end)
+                # Get all users with wallets
+                users_with_wallets = db.query(User).filter(
+                    User.crypto_wallet_address.isnot(None)
+                ).all()
 
-                    if logs:
-                        for log in logs:
-                            try:
-                                await _process_transfer(log, db)
-                            except Exception as e:
-                                print(f"[blockchain] Failed to process log: {e}")
+                if users_with_wallets:
+                    print(f"[blockchain] Checking {len(users_with_wallets)} wallets...")
+                    for user in users_with_wallets:
+                        try:
+                            await _check_and_credit_balance(user.crypto_wallet_address, db)
+                        except Exception as e:
+                            print(f"[blockchain] Error checking {user.email}: {e}")
 
-                    batch_start = batch_end + 1
-
-                last_block = latest
             finally:
                 db.close()
 
