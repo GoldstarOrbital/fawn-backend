@@ -15,8 +15,8 @@ in a header. Sandbox is https://sandbox.plaid.com.
 
 The access_token is a long-lived secret — callers persist it on the
 PlaidItem row and must never expose it to the client. get_auth() returns
-raw routing/account numbers that follow the same handling rule as Unit/
-Column funding: forward to the banking provider, store only the last 4.
+raw routing/account numbers — forward to the ACH processor, store only
+the last 4.
 
 Guarded by _require_configured(): unset client_id/secret raises.
 """
@@ -85,9 +85,9 @@ async def exchange_public_token(public_token: str) -> dict:
 
 
 async def get_auth(access_token: str) -> dict:
-    """Fetch routing/account numbers for the linked account so the banking
-    provider (Column/Unit) can set up ACH. Returns the first account's numbers
-    plus an institution-name best-effort for display."""
+    """Fetch routing/account numbers for the linked account so an ACH
+    processor can move funds. Returns the first account's numbers plus an
+    institution-name best-effort for display."""
     data = await _request("/auth/get", {"access_token": access_token})
     numbers = data.get("numbers", {}).get("ach", [])
     accounts = data.get("accounts", [])

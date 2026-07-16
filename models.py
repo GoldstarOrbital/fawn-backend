@@ -34,17 +34,9 @@ class User(Base):
     # Total platform fees paid (in cents), for analytics/reporting
     total_fees_paid_cents = Column(Integer, default=0, nullable=False)
 
-    # ── LEGACY BANKING FIELDS (kept for migration reference, not used) ──
-    unit_customer_id = Column(String, nullable=True)
-    unit_account_id = Column(String, nullable=True)
-    unit_application_id = Column(String, nullable=True)
-    unit_application_form_id = Column(String, nullable=True)
-
-    # Multi-BaaS provider identifiers (Column / Lithic / Alpaca). All nullable —
-    # populated only once a user is opted into each provider.
-    column_entity_id = Column(String, nullable=True)      # Column person/entity record
-    column_account_id = Column(String, nullable=True)     # Column bank account
-    lithic_account_token = Column(String, nullable=True)  # Lithic financial account backing cards
+    # Third-party account identifiers. FAWN is self-custodial/crypto-native —
+    # investing (Alpaca) and bank-account linking (Plaid, see PlaidItem) are
+    # the only remaining third parties.
     alpaca_account_id = Column(String, nullable=True)     # Alpaca brokerage account
 
     # Referral
@@ -139,61 +131,6 @@ class DealSuggestion(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-class Card(Base):
-    """Ownership record for a Unit virtual debit card.
-
-    Unit is the source of truth for card state (status, last4, etc.) —
-    this table only exists so we can cheaply verify "does this card
-    belong to this user" without an extra Unit API call on every request.
-    """
-    __tablename__ = "cards"
-
-    id = Column(String, primary_key=True, default=new_id)
-    user_id = Column(String, nullable=False, index=True)
-    # Opaque provider card id. Historically a Unit card id; for Lithic-issued
-    # cards this holds the Lithic card token. `provider` disambiguates which
-    # card service owns it. Column name kept as unit_card_id for schema
-    # backward-compatibility (renaming would need a data migration).
-    unit_card_id = Column(String, nullable=False, unique=True, index=True)
-    provider = Column(String, nullable=False, default="unit")  # "unit" | "lithic"
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class FundingRequest(Base):
-    """A request to pull money from an external bank account into a FAWN
-    deposit account via ACH (Unit's inline-counterparty ACH debit/Credit
-    direction — see services/unit.py).
-
-    The full external account/routing number is NEVER stored here — only
-    the last 4 digits, for the user's own reference. The full numbers are
-    sent directly to Unit and discarded immediately after the API call,
-    mirroring how SSN is handled in the registration flow.
-    """
-    __tablename__ = "funding_requests"
-
-    id = Column(String, primary_key=True, default=new_id)
-    user_id = Column(String, nullable=False, index=True)
-    amount_cents = Column(Integer, nullable=False)
-    status = Column(String, nullable=False, default="pending", index=True)  # pending | completed | failed
-    external_account_last4 = Column(String, nullable=False)
-    external_bank_name = Column(String, nullable=True)
-    unit_payment_id = Column(String, nullable=True)
-    idempotency_key = Column(String, nullable=False, unique=True, index=True)
-    error_message = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class UnitEvent(Base):
-    """Idempotency record — every processed Unit webhook event id is stored
-    here, mirroring StripeEvent's pattern."""
-    __tablename__ = "unit_events"
-
-    id = Column(String, primary_key=True)  # Unit event id
-    type = Column(String, nullable=False)
-    received_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
 class Handle(Base):
     """A unique @handle a user claims to send/receive P2P payments.
 
@@ -207,98 +144,6 @@ class Handle(Base):
     handle = Column(String, nullable=False, unique=True, index=True)  # lowercase, no "@"
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-
-class P2PTransfer(Base):
-    """A single P2P money movement: a direct send, or a request-to-pay.
-
-    Direction is always expressed as from_user_id (debited) -> to_user_id
-    (credited), regardless of whether the row originated as a "send"
-    (creator is from_user_id) or a "request" (creator is to_user_id,
-    asking from_user_id to pay). Splits are N of these rows sharing a
-    group_id.
-
-    Every send is created in status="pending" and does NOT touch Unit
-    until POST /p2p/transfers/{id}/confirm is called — this is what
-    forces the irreversible-action confirmation screen in the UI for
-    every transfer, not just risky ones. Requests start in
-    status="requested" and only become a real money movement once the
-    payer creates+confirms a linked transfer referencing
-    source_request_id.
-    """
-    __tablename__ = "p2p_transfers"
-
-    id = Column(String, primary_key=True, default=new_id)
-    type = Column(String, nullable=False, index=True)  # "send" | "request"
-    status = Column(String, nullable=False, default="pending", index=True)
-    # pending | requires_step_up | completed | failed | requested | declined | disputed | expired
-
-    from_user_id = Column(String, nullable=False, index=True)   # debited / payer
-    to_user_id = Column(String, nullable=False, index=True)     # credited / payee
-    from_handle = Column(String, nullable=False)
-    to_handle = Column(String, nullable=False)
-
-    amount_cents = Column(Integer, nullable=False)
-    note = Column(String, nullable=True)
-    warning = Column(String, nullable=True)  # scam-warning text shown to the user, if any
-
-    group_id = Column(String, nullable=True, index=True)          # links split-the-bill rows
-    source_request_id = Column(String, nullable=True, index=True)  # set when a "send" fulfills a "request"
-    related_transfer_id = Column(String, nullable=True, index=True)  # links a refund back to the original
-
-    idempotency_key = Column(String, nullable=False, unique=True, index=True)
-    unit_book_payment_id = Column(String, nullable=True)
-    error_message = Column(String, nullable=True)
-
-    step_up_required = Column(Boolean, default=False, nullable=False)
-    step_up_acknowledged = Column(Boolean, default=False, nullable=False)
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class P2PDispute(Base):
-    """A Reg E–style dispute filed against a completed transfer.
-
-    Money has already moved at Unit by the time a dispute is filed —
-    this is a claims/review layer on top, not an automatic reversal.
-    Admin resolves manually via /admin/p2p/disputes/{id}/resolve, which
-    if approved triggers a separate refund P2PTransfer.
-    """
-    __tablename__ = "p2p_disputes"
-
-    id = Column(String, primary_key=True, default=new_id)
-    transfer_id = Column(String, nullable=False, index=True)
-    # Canonical id of the underlying money movement this dispute covers.
-    # A "request" row and the linked "send" row that fulfills it represent
-    # the SAME real Unit Book Payment (see pay_request/confirm_transfer in
-    # routers/p2p.py) — payment_id always resolves to the "send" row's id
-    # so that disputing either row is recognized as disputing one payment.
-    # Nullable for backward compatibility with rows created before this
-    # column existed.
-    payment_id = Column(String, nullable=True, index=True)
-    filer_user_id = Column(String, nullable=False, index=True)
-    reason = Column(String, nullable=False)
-    status = Column(String, default="open", nullable=False, index=True)  # open | refunded | denied
-    resolution_note = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class P2PAuditLog(Base):
-    """Append-only log of every state change on a P2P transfer.
-
-    Required compliance trail — every create/step-up/confirm/fail/dispute
-    event gets a row here, independent of the mutable P2PTransfer state.
-    """
-    __tablename__ = "p2p_audit_log"
-
-    id = Column(String, primary_key=True, default=new_id)
-    transfer_id = Column(String, nullable=False, index=True)
-    user_id = Column(String, nullable=False, index=True)
-    event_type = Column(String, nullable=False)  # created | step_up_required | confirmed | failed | disputed | dispute_resolved
-    metadata_json = Column(String, nullable=True)  # json.dumps'd dict — kept as text for portability
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class PodcastEpisode(Base):
@@ -356,16 +201,15 @@ class EmailLog(Base):
     sent_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-# ---- Multi-BaaS provider records (Column / Lithic / Alpaca / Plaid) ---------
+# ---- Third-party integrations (Alpaca investing / Plaid bank linking) ------
 
 class PlaidItem(Base):
     """A linked external bank account for a user (Plaid).
 
     Stores the long-lived Plaid access_token — a secret, never exposed to the
     client. The raw external routing/account numbers are NOT stored here; they
-    are fetched from Plaid at funding time and forwarded to the banking
-    provider, keeping only the last-4 mask for display (same rule as Unit
-    ACH funding).
+    are fetched from Plaid at funding time and forwarded to the ACH processor,
+    keeping only the last-4 mask for display.
     """
     __tablename__ = "plaid_items"
 
@@ -399,25 +243,6 @@ class InvestingOrder(Base):
     idempotency_key = Column(String, nullable=False, unique=True, index=True)
     error_message = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class ColumnEvent(Base):
-    """Idempotency record — every processed Column webhook event id is stored
-    here, mirroring UnitEvent/StripeEvent."""
-    __tablename__ = "column_events"
-
-    id = Column(String, primary_key=True)  # Column event id
-    type = Column(String, nullable=False)
-    received_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class LithicEvent(Base):
-    """Idempotency record — every processed Lithic webhook/auth-stream event id."""
-    __tablename__ = "lithic_events"
-
-    id = Column(String, primary_key=True)  # Lithic event token
-    type = Column(String, nullable=False)
-    received_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CryptoWallet(Base):
@@ -521,11 +346,10 @@ class BankTransfer(Base):
     and sent via ACH to a recipient bank account. Settlement time: standard
     ACH 1-3 business days. Costs $0.01 flat fee (same as P2P).
 
-    Recipient bank details (routing/account) are sent directly to banking provider and
-    NOT persisted on our side (only last 4 for reference), mirroring ACH
-    funding's handling of raw account numbers for security.
+    Recipient bank details (routing/account) are sent directly to the ACH
+    processor and NOT persisted on our side (only last 4 for reference).
 
-    Can be processed via Column (ACH) or Stripe Payouts (instant, <30 sec).
+    Processed via Stripe Payouts (instant, <30 sec).
     """
     __tablename__ = "bank_transfers"
 
@@ -538,7 +362,7 @@ class BankTransfer(Base):
     fee_cents = Column(Integer, default=100, nullable=False)  # $0.01 = 100 cents
     status = Column(String, default="pending", nullable=False, index=True)  # pending | completed | failed
     memo = Column(String, nullable=True)
-    ach_id = Column(String, nullable=True, unique=True, index=True)  # Column ACH transfer ID (if using Column)
+    ach_id = Column(String, nullable=True, unique=True, index=True)  # reserved for a future direct-ACH processor
     stripe_payout_id = Column(String, nullable=True, unique=True, index=True)  # Stripe payout ID (if using Stripe)
     stripe_payout_status = Column(String, nullable=True)  # in_transit | paid | failed (Stripe status tracking)
     idempotency_key = Column(String, nullable=False, unique=True, index=True)  # prevent retries creating dupes

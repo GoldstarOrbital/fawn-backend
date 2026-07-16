@@ -11,17 +11,7 @@ def _register_payload(email="Test@Example.COM", password="supersecret1"):
         "password": password,
         "full_name": "Test Student",
         "phone": "5551234567",
-        "date_of_birth": "2000-01-01",
-        "ssn": "123456789",
-        "address": {
-            "street": "1 Main St",
-            "city": "Berkeley",
-            "state": "CA",
-            "postal_code": "94720",
-            "country": "US",
-        },
         "is_student": True,
-        "occupation": "Student",
         "school": "berkeley",
         "location": "Berkeley, CA",
         "military_status": "none",
@@ -57,11 +47,10 @@ def test_duplicate_email_registration_fails_400(client):
     assert second.status_code == 400
 
 
-def test_register_without_sensitive_kyc_fields_for_hosted_unit_form(client):
-    payload = _register_payload(email="hostedkyc@example.com")
-    payload.pop("ssn")
-    payload.pop("date_of_birth")
-    payload.pop("address")
+def test_register_collects_no_sensitive_kyc_fields(client):
+    """FAWN is self-custodial/crypto-native — registration never asks for
+    or stores SSN, date of birth, or address."""
+    payload = _register_payload(email="nokyc@example.com")
 
     resp = client.post("/auth/register", json=payload)
     assert resp.status_code == 201
@@ -71,8 +60,9 @@ def test_register_without_sensitive_kyc_fields_for_hosted_unit_form(client):
     assert me_resp.status_code == 200
     body = me_resp.json()
     assert body["wallet_initialized"] is False
-    assert body["application_pending"] is False
-    assert body["unit_application_form_ready"] is True
+    assert "ssn" not in body
+    assert "date_of_birth" not in body
+    assert "address" not in body
 
 
 def test_patch_me_updates_school(client):

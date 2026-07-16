@@ -12,7 +12,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook, crypto, trading, admin_credit, automation, webhooks, revenue
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, podcast, money_review, investing, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -78,23 +78,13 @@ def _init_db_schema():
         _patch("users", "referral_count", "referral_count INTEGER DEFAULT 0 NOT NULL")
         _patch("users", "phone", "phone VARCHAR")
         _patch("users", "is_student", "is_student BOOLEAN DEFAULT FALSE")
-        _patch("users", "unit_application_id", "unit_application_id VARCHAR")
-        _patch("users", "unit_application_form_id", "unit_application_form_id VARCHAR")
         _patch("users", "school", "school VARCHAR")
         _patch("users", "location", "location VARCHAR")
         _patch("users", "military_status", "military_status VARCHAR")
 
-        # multi-BaaS provider ids added during the Column/Lithic/Alpaca cutover
-        _patch("users", "column_entity_id", "column_entity_id VARCHAR")
-        _patch("users", "column_account_id", "column_account_id VARCHAR")
-        _patch("users", "lithic_account_token", "lithic_account_token VARCHAR")
+        # Alpaca is the one remaining third-party account id on User
+        # (investing) — Plaid's link data lives on its own PlaidItem table.
         _patch("users", "alpaca_account_id", "alpaca_account_id VARCHAR")
-
-        # cards.provider distinguishes Unit- vs Lithic-issued cards
-        _patch("cards", "provider", "provider VARCHAR DEFAULT 'unit'")
-
-        # p2p_disputes columns added after initial schema
-        _patch("p2p_disputes", "payment_id", "payment_id VARCHAR")
 
         # crypto wallet columns — new crypto-native architecture (2026-07-08)
         # Note: crypto_wallet_address is VARCHAR (not UNIQUE) to allow schema patching on existing tables
@@ -205,17 +195,11 @@ app.include_router(public_stats.router)
 app.include_router(stripe_webhook.router)
 app.include_router(member.router)
 app.include_router(deals.router)
-app.include_router(p2p.router)
-app.include_router(cards.router)
-app.include_router(unit_webhook.router)
-app.include_router(funding.router)
-app.include_router(unit_onboarding.router)
 app.include_router(podcast.router)
 app.include_router(money_review.router)
 app.include_router(investing.router)
 app.include_router(plaid_link.router)
-app.include_router(column_webhook.router)
-app.include_router(lithic_webhook.router)
+app.include_router(onramp.router)
 
 # Crypto-native stablecoin wallet & transfers
 app.include_router(crypto.router)
@@ -327,7 +311,7 @@ def health():
 
 @app.get("/status")
 def status():
-    """Operational status: uptime, db connectivity, Unit API reachability, version."""
+    """Operational status: uptime, db connectivity, version."""
     # DB check
     db_ok = False
     try:
@@ -338,55 +322,12 @@ def status():
     except Exception:
         pass
 
-    # Unit API reachability â€” attempt a connection; any HTTP response means the host is up
-    unit_ok = False
-    try:
-        import urllib.request
-        import urllib.error
-        req = urllib.request.Request(
-            f"{settings.unit_base_url}/",
-            method="HEAD",
-        )
-        req.add_header("User-Agent", "fawn-status-check/1.0")
-        try:
-            urllib.request.urlopen(req, timeout=3)
-            unit_ok = True
-        except urllib.error.HTTPError:
-            # Got an HTTP error response â€” host is reachable
-            unit_ok = True
-        except urllib.error.URLError:
-            unit_ok = False
-    except Exception:
-        unit_ok = False
-
     uptime_seconds = round(time.time() - _START_TIME, 1)
 
     return {
         "version": "0.2.0",
         "uptime_seconds": uptime_seconds,
         "db_ok": db_ok,
-        "unit_api_reachable": unit_ok,
-        "unit_base_url": settings.unit_base_url,
-    }
-
-
-@app.get("/status/unit-auth")
-async def unit_auth_status():
-    """Deep check: does the currently-configured UNIT_API_TOKEN authenticate?
-
-    Distinct from /status's `unit_api_reachable` (which only pings the host).
-    This makes an authenticated Unit call and returns only a boolean — no
-    token or account data is exposed. Purpose-built to verify token rotation:
-    after swapping UNIT_API_TOKEN, hit this and expect `unit_auth_ok: true`.
-    """
-    from services import unit as unit_svc
-    result = await unit_svc.verify_auth()
-    return {
-        "unit_auth_ok": result["ok"],
-        "unit_http_status": result["status"],
-        "detail": result["detail"],
-        "reason": result["reason"],
-        "unit_base_url": settings.unit_base_url,
     }
 
 
@@ -394,10 +335,10 @@ async def unit_auth_status():
 async def egress_ip():
     """Report this deployment's OUTBOUND public IP.
 
-    Unit API tokens can be IP-allowlisted; authenticated calls from a
-    non-allowlisted IP are silently dropped (they time out rather than 401).
-    This returns the IP Unit sees for our requests, so it can be added to the
-    token's allowlist (or so we can confirm the allowlist should be cleared).
+    Third-party APIs (Alpaca, Plaid) can be IP-allowlisted; authenticated
+    calls from a non-allowlisted IP are silently dropped (they time out
+    rather than 401). This returns the IP those providers see for our
+    requests, so it can be added to an allowlist if needed.
     Queries a couple of echo services and returns whichever answers first.
     """
     import httpx
@@ -417,12 +358,14 @@ async def egress_ip():
 
 @app.get("/status/net-diag")
 async def net_diag():
-    """Isolate ReadTimeout root cause: MTU/egress blackhole vs Unit-specific block.
+    """Isolate ReadTimeout root cause: MTU/egress blackhole vs a specific
+    provider block.
 
-    Sends a request with a ~2.1KB Authorization header (mimicking Unit's large
-    token) to a NON-Unit echo host, and separately a small request. If the
-    large request to a neutral host also hangs, the fault is Railway's egress
-    network (large packets dropped), not Unit and not the token.
+    Sends a request with a ~2.1KB Authorization header (mimicking an
+    oversized token) to a neutral echo host, and separately a small
+    request. If the large request to a neutral host also hangs, the fault
+    is Railway's egress network (large packets dropped), not any one
+    provider or token.
     """
     import httpx
     big_header = "Bearer " + ("x" * 2100)

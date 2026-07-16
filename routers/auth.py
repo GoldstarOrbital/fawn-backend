@@ -23,7 +23,6 @@ from schemas import (
 )
 from config import settings
 from dependencies import get_current_user
-from services import unit as unit_svc
 from services.crypto_wallet import create_wallet, WalletNotInitialized
 from rate_limiting import limiter
 
@@ -108,42 +107,6 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     )
     db.add(user)
     db.flush()
-
-    # Submit direct KYC to Unit only when the caller provides the full
-    # sensitive payload. Production clients should prefer Unit's hosted
-    # application form via /unit/application-form-prefill so FAWN never
-    # handles SSNs directly.
-    unit_token_set = settings.unit_api_token not in ("UNIT_TOKEN_NOT_SET", "")
-    direct_kyc_payload = bool(req.ssn and req.date_of_birth and req.address)
-    if unit_token_set and direct_kyc_payload:
-        try:
-            application = await unit_svc.create_application(
-                full_name=req.full_name,
-                email=req.email,
-                phone=req.phone,
-                ssn=req.ssn,          # real SSN, not stored after this line
-                date_of_birth=req.date_of_birth,
-                address=req.address,
-                occupation=req.occupation,
-            )
-            app_status = application.get("attributes", {}).get("status", "pending")
-            app_id = application.get("id")
-
-            if app_status == "approved":
-                relationships = application.get("relationships", {})
-                customer_data = relationships.get("customer", {}).get("data", {})
-                unit_customer_id = customer_data.get("id")
-                if unit_customer_id:
-                    user.unit_customer_id = unit_customer_id
-                    account = await unit_svc.create_deposit_account(unit_customer_id)
-                    user.unit_account_id = account["id"]
-            else:
-                # pending/manual — store application id so we can poll later
-                user.unit_application_id = app_id
-
-        except Exception as e:
-            print(f"[Unit] KYC application failed: {e}")
-            # Don't block registration — account creation will retry via webhook
 
     try:
         db.commit()

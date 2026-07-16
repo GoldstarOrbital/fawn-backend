@@ -1,27 +1,15 @@
 import re
 from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Optional, List
-from datetime import date as _date
 
 # --- Auth ---
-
-class Address(BaseModel):
-    street: str
-    city: str
-    state: str       # 2-letter US state code
-    postal_code: str
-    country: str = "US"
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     full_name: str
-    phone: Optional[str] = None  # Optional for student signup; required for KYC
-    date_of_birth: Optional[str] = None  # YYYY-MM-DD, passed to Unit when direct KYC is used
-    ssn: Optional[str] = None            # 9 digits, passed to Unit when direct KYC is used, NEVER stored
-    address: Optional[Address] = None
+    phone: Optional[str] = None  # Optional
     is_student: bool = True
-    occupation: str = "Student"
     school: Optional[str] = None  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
     location: Optional[str] = None
     military_status: Optional[str] = None
@@ -38,27 +26,6 @@ class RegisterRequest(BaseModel):
     def password_strength(cls, v: str) -> str:
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
-        return v
-
-    @field_validator("ssn")
-    @classmethod
-    def ssn_format(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        digits = re.sub(r"\D", "", v)
-        if len(digits) != 9:
-            raise ValueError("SSN must be 9 digits")
-        return digits
-
-    @field_validator("date_of_birth")
-    @classmethod
-    def dob_format(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        try:
-            _date.fromisoformat(v)
-        except ValueError:
-            raise ValueError("date_of_birth must be YYYY-MM-DD")
         return v
 
     @field_validator("phone", mode="before")
@@ -125,8 +92,6 @@ class UserResponse(BaseModel):
     wallet_initialized: Optional[bool] = None
     crypto_wallet_address: Optional[str] = None
     wallet_type: Optional[str] = None
-    application_pending: Optional[bool] = None
-    unit_application_form_ready: Optional[bool] = None
 
     @classmethod
     def from_orm_user(cls, user):  # type: ignore[override]
@@ -138,231 +103,12 @@ class UserResponse(BaseModel):
             school=getattr(user, "school", None),
             location=getattr(user, "location", None),
             military_status=getattr(user, "military_status", None),
-            wallet_initialized=bool(user.wallet_initialized or user.unit_account_id),
+            wallet_initialized=bool(user.wallet_initialized),
             crypto_wallet_address=getattr(user, "crypto_wallet_address", None),
             wallet_type=getattr(user, "wallet_type", None),
-            application_pending=bool(
-                getattr(user, "unit_application_id", None) and not user.unit_account_id
-            ),
-            unit_application_form_ready=not bool(user.unit_account_id),
         )
 
-
-class UnitApplicationFormPrefillResponse(BaseModel):
-    data: dict
-
-# --- Accounts ---
-
-class AccountBalance(BaseModel):
-    account_id: str
-    available: float
-    current: float
-    currency: str = "USD"
-
 # --- Cards ---
-
-class CardOut(BaseModel):
-    id: str
-    last4_digits: str
-    expiration_date: str
-    status: str
-    created_at: str
-
-class CardList(BaseModel):
-    cards: List[CardOut]
-
-class CardFreezeRequest(BaseModel):
-    reason: Optional[str] = "userRequested"
-
-# --- Funding (Add Funds via ACH) ---
-
-class AddFundsRequest(BaseModel):
-    amount_cents: int
-    routing_number: str
-    account_number: str
-    account_type: str  # "Checking" | "Savings"
-    account_holder_name: str
-    idempotency_key: str
-
-    @field_validator("amount_cents")
-    @classmethod
-    def amount_positive(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("amount_cents must be positive")
-        return v
-
-    @field_validator("routing_number")
-    @classmethod
-    def routing_number_format(cls, v: str) -> str:
-        digits = re.sub(r"\D", "", v)
-        if len(digits) != 9:
-            raise ValueError("Routing number must be 9 digits")
-        return digits
-
-    @field_validator("account_number")
-    @classmethod
-    def account_number_format(cls, v: str) -> str:
-        digits = re.sub(r"\D", "", v)
-        if not (4 <= len(digits) <= 17):
-            raise ValueError("Account number must be 4-17 digits")
-        return digits
-
-    @field_validator("account_type")
-    @classmethod
-    def account_type_valid(cls, v: str) -> str:
-        if v not in ("Checking", "Savings"):
-            raise ValueError("account_type must be 'Checking' or 'Savings'")
-        return v
-
-class FundingRequestOut(BaseModel):
-    id: str
-    amount_cents: int
-    status: str
-    external_account_last4: str
-    created_at: str
-    completed_at: Optional[str] = None
-    error_message: Optional[str] = None
-
-class FundingRequestList(BaseModel):
-    requests: List[FundingRequestOut]
-
-# --- Transactions ---
-
-class TransactionItem(BaseModel):
-    id: str
-    amount: float
-    description: str
-    date: str
-    status: str
-    category: Optional[str] = "Other"
-
-class TransactionList(BaseModel):
-    transactions: List[TransactionItem]
-
-# --- P2P payments ---
-
-_HANDLE_RE = re.compile(r"^[a-z0-9_]{3,20}$")
-
-class HandleClaimRequest(BaseModel):
-    handle: str
-
-    @field_validator("handle")
-    @classmethod
-    def normalize_handle(cls, v: str) -> str:
-        v = v.strip().lstrip("@").lower()
-        if not _HANDLE_RE.match(v):
-            raise ValueError("Handle must be 3-20 characters: lowercase letters, numbers, underscore only.")
-        return v
-
-class HandleOut(BaseModel):
-    handle: str
-
-class HandleLookupOut(BaseModel):
-    handle: str
-    claimable: bool
-    display_name: Optional[str] = None  # first name + last initial only, never full identity
-
-class P2PSendRequest(BaseModel):
-    to_handle: str
-    amount_cents: int
-    note: Optional[str] = None
-    idempotency_key: str
-
-    @field_validator("to_handle")
-    @classmethod
-    def normalize_to_handle(cls, v: str) -> str:
-        return v.strip().lstrip("@").lower()
-
-    @field_validator("amount_cents")
-    @classmethod
-    def amount_positive(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("amount_cents must be positive")
-        if v > 100_000_00:  # $100,000 hard ceiling regardless of tier — sanity bound, not the real limit
-            raise ValueError("amount_cents exceeds the maximum allowed transfer size")
-        return v
-
-class P2PRequestRequest(BaseModel):
-    from_handle: str  # the person being asked to pay
-    amount_cents: int
-    note: Optional[str] = None
-    idempotency_key: str
-
-    @field_validator("from_handle")
-    @classmethod
-    def normalize_from_handle(cls, v: str) -> str:
-        return v.strip().lstrip("@").lower()
-
-    @field_validator("amount_cents")
-    @classmethod
-    def amount_positive(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("amount_cents must be positive")
-        return v
-
-class P2PSplitRequest(BaseModel):
-    total_amount_cents: int
-    recipient_handles: List[str]
-    note: Optional[str] = None
-    idempotency_key: str  # one key for the whole split; per-row keys are derived from it
-
-    @field_validator("recipient_handles")
-    @classmethod
-    def normalize_handles(cls, v: List[str]) -> List[str]:
-        cleaned = [h.strip().lstrip("@").lower() for h in v]
-        if len(cleaned) < 1:
-            raise ValueError("At least one recipient handle is required")
-        if len(cleaned) > 20:
-            raise ValueError("Splits are capped at 20 people")
-        if len(set(cleaned)) != len(cleaned):
-            raise ValueError("Duplicate recipient handles in split")
-        return cleaned
-
-    @field_validator("total_amount_cents")
-    @classmethod
-    def amount_positive(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("total_amount_cents must be positive")
-        return v
-
-class P2PConfirmRequest(BaseModel):
-    step_up_acknowledged: bool = False
-
-class P2PTransferOut(BaseModel):
-    id: str
-    type: str
-    status: str
-    direction: str  # "sent" | "received" | "request_outgoing" | "request_incoming" (relative to current user)
-    counterparty_handle: str
-    amount_cents: int
-    note: Optional[str] = None
-    warning: Optional[str] = None
-    group_id: Optional[str] = None
-    step_up_required: bool = False
-    created_at: str
-    completed_at: Optional[str] = None
-    error_message: Optional[str] = None
-
-class P2PTransferList(BaseModel):
-    transfers: List[P2PTransferOut]
-
-class P2PDisputeRequest(BaseModel):
-    reason: str
-
-    @field_validator("reason")
-    @classmethod
-    def reason_not_empty(cls, v: str) -> str:
-        v = v.strip()
-        if len(v) < 10:
-            raise ValueError("Please describe the issue in at least 10 characters.")
-        return v[:1000]
-
-class P2PDisputeOut(BaseModel):
-    id: str
-    transfer_id: str
-    status: str
-    reason: str
-    created_at: str
 
 # --- News / AI ---
 

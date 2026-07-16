@@ -325,10 +325,10 @@ def get_stats_overview(
 
     registered_users_count: int = db.query(func.count(User.id)).scalar() or 0
 
-    # "Active account" = Unit deposit account created (unit_account_id set).
+    # "Active account" = self-custodial USDC wallet created.
     users_with_active_account_count: int = (
         db.query(func.count(User.id))
-        .filter(User.unit_account_id.isnot(None))
+        .filter(User.wallet_initialized.is_(True))
         .scalar()
         or 0
     )
@@ -366,7 +366,7 @@ def lookup_user_status(
     db: Session = Depends(get_db),
     _: str = Depends(require_admin_key),
 ) -> Dict:
-    """Debug helper: see exactly where a user's KYC/account setup stands,
+    """Debug helper: see exactly where a user's wallet/account setup stands,
     without needing direct DB access. No password/SSN/secrets exposed."""
     user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
     if not user:
@@ -375,9 +375,7 @@ def lookup_user_status(
     return {
         "email": user.email,
         "created_at": user.created_at.isoformat() if user.created_at else None,
-        "unit_customer_id": user.unit_customer_id,
-        "unit_account_id": user.unit_account_id,
-        "unit_application_id": user.unit_application_id,
-        "wallet_initialized": bool(user.unit_account_id),
-        "application_pending": bool(user.unit_application_id and not user.unit_account_id),
+        "wallet_initialized": bool(user.wallet_initialized),
+        "crypto_wallet_address": user.crypto_wallet_address,
+        "alpaca_account_id": user.alpaca_account_id,
     }

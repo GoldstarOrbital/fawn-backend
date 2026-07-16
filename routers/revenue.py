@@ -210,7 +210,7 @@ async def get_revenue_distribution(
             "amount_cents": 0,
             "amount_usd": "$0.00",
             "percentage": 0,
-            "description": "Reserved for future partnerships (Alchemy, Ramp, etc)",
+            "description": "Reserved for future partnerships (Alchemy, etc)",
         },
     }
 

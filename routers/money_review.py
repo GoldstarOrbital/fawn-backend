@@ -21,8 +21,6 @@ from database import get_db
 from dependencies import get_current_user
 from models import User
 from services import claude as claude_svc
-from services import unit as unit_svc
-from services.categorize import categorize
 from rate_limiting import limiter
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -36,8 +34,8 @@ DISCLAIMER = (
 class MoneyReviewRequest(BaseModel):
     monthly_income_dollars: Optional[float] = Field(default=None, ge=0, le=1_000_000)
     goals: Optional[str] = Field(default=None, max_length=500)
-    # For users without an active account yet (pre-KYC), the classic
-    # paste-your-data mode still works.
+    # FAWN doesn't have linked bank transaction history yet (self-custodial
+    # crypto wallet), so the paste-your-data mode is the primary path.
     pasted_data: Optional[str] = Field(default=None, max_length=4000)
 
 
@@ -51,18 +49,6 @@ async def run_money_review(
 ):
     transactions: list[dict] = []
     category_totals: dict[str, float] = {}
-
-    if current_user.unit_account_id:
-        try:
-            transactions = await unit_svc.list_transactions(current_user.unit_account_id, limit=100)
-        except Exception as e:
-            print(f"[money-review] transaction fetch failed for user {current_user.id}: {e}")
-        for t in transactions:
-            amount = t.get("amount", 0)
-            if amount >= 0:
-                continue  # spending only; income is stated separately
-            cat, _emoji = categorize(t.get("description", ""))
-            category_totals[cat] = round(category_totals.get(cat, 0) + abs(amount), 2)
 
     if not transactions and not (req.pasted_data and req.pasted_data.strip()):
         raise HTTPException(

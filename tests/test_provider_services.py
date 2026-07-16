@@ -8,22 +8,8 @@ import asyncio
 
 import pytest
 
-from services import column as column_svc
-from services import lithic as lithic_svc
 from services import alpaca as alpaca_svc
 from services import plaid as plaid_svc
-
-
-def test_column_guard(monkeypatch):
-    monkeypatch.setattr("services.column.settings.column_api_key", "")
-    with pytest.raises(column_svc.ColumnNotConfigured):
-        asyncio.run(column_svc.get_account_balance("acc_x"))
-
-
-def test_lithic_guard(monkeypatch):
-    monkeypatch.setattr("services.lithic.settings.lithic_api_key", "")
-    with pytest.raises(lithic_svc.LithicNotConfigured):
-        asyncio.run(lithic_svc.get_card("card_x"))
 
 
 def test_alpaca_guard(monkeypatch):

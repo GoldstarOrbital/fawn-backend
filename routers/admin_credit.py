@@ -1,5 +1,5 @@
 """
-Emergency admin endpoint for manual balance credits (Ramp deposits, etc)
+Emergency admin endpoint for manual balance credits (undetected on-chain deposits, etc)
 SECURITY: Requires X-Admin-Key header (same as /fees/collect)
 """
 from fastapi import APIRouter, Depends, HTTPException, Header
