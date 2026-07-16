@@ -12,7 +12,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook, crypto, trading, admin_credit
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, p2p, cards, unit_webhook, funding, unit_onboarding, podcast, money_review, investing, plaid_link, column_webhook, lithic_webhook, crypto, trading, admin_credit, automation, webhooks
 from config import settings
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
@@ -228,6 +228,12 @@ app.include_router(trading.router)
 
 # Admin utilities (manual balance credit for deposits, fee collection)
 app.include_router(admin_credit.router)
+
+# Automation APIs (recurring transfers, price alerts, DCA, savings goals, etc)
+app.include_router(automation.router)
+
+# Webhooks & Notifications (real-time event delivery, webhooks, batch ops)
+app.include_router(webhooks.router)
 
 
 @app.on_event("startup")
