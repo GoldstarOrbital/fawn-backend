@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     allow_unsigned_lithic_webhooks: bool = False
     fawn_encryption_key: str = ""  # Encryption key for custodial wallet private keys
     uniswap_api_key: str = ""  # Uniswap v3 API key for trading quotes
+    alchemy_api_key: str = ""  # Alchemy RPC for blockchain monitoring (Polygon)
     allowed_origins: str = (
         "https://goldstarorbital.com,"
         "https://www.goldstarorbital.com,"
