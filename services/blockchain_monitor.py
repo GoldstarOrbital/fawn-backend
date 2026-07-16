@@ -24,8 +24,15 @@ from database import SessionLocal
 from models import User, UserAuditLog
 from config import settings
 
-# Polygon Mainnet USDC Contract
-USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99a7a9449Aa84174"
+# Polygon Mainnet USDC contracts. There are two live tokens both called
+# "USDC" on Polygon: native USDC (issued directly by Circle since 2023,
+# what Coinbase/Robinhood/most modern senders use) and USDC.e (the older
+# PoS-bridged version, what some older tooling still uses). Watching only
+# one silently misses deposits sent via the other — sum both so no
+# variant of "USDC on Polygon" is ever missed.
+USDC_CONTRACT_NATIVE = "0x3c499c542cef5E3811e1192ce70d8cc03d5c3359"
+USDC_CONTRACT_BRIDGED = "0x2791Bca1f2de4661ED88A30C99a7a9449Aa84174"
+USDC_CONTRACTS = [USDC_CONTRACT_NATIVE, USDC_CONTRACT_BRIDGED]
 
 # RPC endpoints with fallback chain (DeFi-grade fault tolerance)
 def _get_rpc_endpoints() -> list[str]:
@@ -103,20 +110,15 @@ class RPCClient:
 _rpc_client = RPCClient()
 
 
-async def _get_usdc_balance(wallet_address: str) -> Optional[int]:
-    """
-    Query on-chain USDC balance via eth_call (balanceOf).
-
-    Returns balance in cents (USDC has 6 decimals, so 1 USDC = 100 cents).
-    """
-    # balanceOf(address) signature
+async def _get_contract_balance(contract: str, wallet_address: str) -> Optional[int]:
+    """Query on-chain balanceOf() for a single ERC-20 contract, in cents."""
     method_sig = "0x70a08231"
     padded_addr = wallet_address.lower().replace("0x", "").zfill(64)
     call_data = method_sig + padded_addr
 
     result = await _rpc_client.call("eth_call", [
         {
-            "to": USDC_CONTRACT,
+            "to": contract,
             "data": call_data,
         },
         "latest",
@@ -124,14 +126,35 @@ async def _get_usdc_balance(wallet_address: str) -> Optional[int]:
 
     if result and result.startswith("0x"):
         try:
-            balance_wei = int(result, 16)
-            balance_cents = balance_wei // (10 ** 6)  # USDC: 6 decimals
-            return balance_cents
+            balance_raw = int(result, 16)
+            # USDC has 6 decimals: 1.000000 USDC = 1_000_000 raw units = 100 cents.
+            # So 1 cent = 10_000 raw units -- divide by 10**4, not 10**6.
+            return balance_raw // (10 ** 4)
         except Exception as e:
-            print(f"[blockchain] Parse error: {e}")
+            print(f"[blockchain] Parse error ({contract}): {e}")
             return None
 
     return None
+
+
+async def _get_usdc_balance(wallet_address: str) -> Optional[int]:
+    """
+    Query combined on-chain USDC balance across both native and bridged
+    USDC contracts on Polygon (see USDC_CONTRACTS comment above).
+
+    Returns balance in cents (USDC has 6 decimals, so 1 USDC = 100 cents),
+    or None only if EVERY contract query failed (so a transient RPC error
+    on one contract doesn't zero out a real balance on the other).
+    """
+    balances = await asyncio.gather(*[
+        _get_contract_balance(contract, wallet_address) for contract in USDC_CONTRACTS
+    ])
+
+    successful = [b for b in balances if b is not None]
+    if not successful:
+        return None
+
+    return sum(successful)
 
 
 async def _settle_deposit(wallet_address: str, db: Session) -> bool:
