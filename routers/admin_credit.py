@@ -2,13 +2,13 @@
 Emergency admin endpoint for manual balance credits (undetected on-chain deposits, etc)
 SECURITY: Requires X-Admin-Key header (same as /fees/collect)
 """
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from database import get_db
 from models import User, UserAuditLog
-from config import settings
+from routers.admin import require_admin_key
 import json
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -22,16 +22,13 @@ class ManualCreditRequest(BaseModel):
 async def manual_credit_balance(
     req: ManualCreditRequest,
     db: Session = Depends(get_db),
-    x_admin_key: str = Header(None)
+    _: str = Depends(require_admin_key),
 ):
     """
     Manually credit a user's USDC balance.
 
     SECURITY: Requires X-Admin-Key header (same as /fees/collect)
     """
-    # EMERGENCY MODE: Allow any request (will be secured after first deployment)
-    # TODO: Set ADMIN_API_KEY environment variable on Railway and re-enable auth check
-
     # Find user by wallet
     user = db.query(User).filter(
         User.crypto_wallet_address.ilike(req.wallet_address)
