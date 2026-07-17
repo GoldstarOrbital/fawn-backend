@@ -6,21 +6,34 @@ seconds, and auto-credits user balances. Uses Alchemy as primary RPC per
 chain with fallback to public RPCs for resilience (DeFi-grade fault
 tolerance).
 
+Detection works off ERC-20 Transfer *event logs* (eth_getLogs), not a
+balanceOf() diff -- a balance diff can only tell you the total changed, not
+who sent it, when, on which chain, or in which transaction. Event logs give
+individual, attributable deposit records (services/blockchain_monitor.py ->
+models.CryptoDeposit), which is what lets a user actually see "$8.01
+received on Base from 0x1887...c3dd, tx 0xabc..." instead of a balance
+number silently moving with no explanation.
+
 A FAWN wallet is a single EVM address (0x...), and the same address can
 independently hold funds on any EVM chain -- a user sending "USDC" has no
 reason to know or care which chain FAWN happens to be watching. Missing a
 chain silently strands real user funds (confirmed in production: a Base
 deposit was invisible to a Polygon-only monitor). CHAINS below is the single
-place to add support for a new chain; the rest of the file is chain-agnostic
-and sums across everything configured.
+place to add support for a new chain; the rest of the file is chain-agnostic.
 
 Within a chain, there can also be multiple ERC-20 contracts all called
 "USDC" (native Circle-issued vs. older bridged versions) -- also confirmed
 in production as a separate miss. Each chain's `contracts` list should
-include every variant in circulation; balances are summed across all of
-them, on all chains, into one combined total.
+include every variant in circulation.
 
-Settlement is atomic: on-chain balance detection -> ledger update -> audit log.
+Per-wallet-per-chain scanning is checkpointed (models.ChainScanCheckpoint)
+so each cycle only queries new blocks, not full history. The first time a
+wallet+chain is seen, a bounded historical look-back runs once to record
+(but NOT double-credit) any deposits that predate this feature -- see
+BACKFILL_BLOCK_LOOKBACK below.
+
+Settlement is atomic per deposit: record CryptoDeposit -> credit ledger ->
+audit log, all in one commit.
 """
 import asyncio
 import json
@@ -29,7 +42,7 @@ from typing import Optional
 import httpx
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import User, UserAuditLog
+from models import User, UserAuditLog, CryptoDeposit, ChainScanCheckpoint
 from config import settings
 
 # ---- Chain + contract registry ----
@@ -68,6 +81,21 @@ CHAINS = {
     },
 }
 
+TRANSFER_EVENT_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+# How far back to look the FIRST time a wallet+chain is scanned, to catch
+# deposits that arrived before this feature existed. ~40,000 blocks is
+# roughly a day on both Polygon and Base (~2s block time). Historical finds
+# beyond this window won't be recorded -- acceptable, since this is a
+# one-time bridge from the old balance-diff system, not the steady-state
+# behavior (steady-state is fully incremental and never misses anything).
+BACKFILL_BLOCK_LOOKBACK = 40_000
+
+# eth_getLogs block-range per call, conservative enough to work across
+# every public RPC fallback (Alchemy allows much more, but we don't special-
+# case it -- simpler and still fast: 40,000 blocks / 2,000 = 20 calls max).
+LOG_CHUNK_SIZE = 2_000
+
 
 def _get_rpc_endpoints(chain: str) -> list[str]:
     """Build the RPC endpoint list for one chain: Alchemy first (if
@@ -103,7 +131,7 @@ class RPCClient:
             endpoint = self.endpoints[idx]
 
             try:
-                async with httpx.AsyncClient(timeout=12.0) as client:
+                async with httpx.AsyncClient(timeout=15.0) as client:
                     response = await client.post(endpoint, json=payload)
                     response.raise_for_status()
                     result = response.json()
@@ -112,14 +140,13 @@ class RPCClient:
                         error = result.get("error", {})
                         error_msg = error.get("message", str(error))
 
-                        # Rate limit: try next endpoint
-                        if "429" in str(error_msg) or "rate" in str(error_msg).lower():
+                        # Rate limit or archive/range restrictions: try next endpoint
+                        if any(s in str(error_msg).lower() for s in ("429", "rate", "archive", "block range")):
                             continue
 
                         # Real error
                         return None
 
-                    # Success: update current index and return
                     self.current_idx = idx
                     self.failure_count[endpoint] = 0
                     return result.get("result")
@@ -137,113 +164,243 @@ class RPCClient:
 _rpc_clients = {chain: RPCClient(chain) for chain in CHAINS}
 
 
-async def _get_contract_balance(rpc_client: RPCClient, contract: str, wallet_address: str) -> Optional[int]:
-    """Query on-chain balanceOf() for a single ERC-20 contract, in cents."""
-    method_sig = "0x70a08231"
-    padded_addr = wallet_address.lower().replace("0x", "").zfill(64)
-    call_data = method_sig + padded_addr
-
-    result = await rpc_client.call("eth_call", [
-        {
-            "to": contract,
-            "data": call_data,
-        },
-        "latest",
-    ])
-
+async def _get_latest_block(chain: str) -> Optional[int]:
+    result = await _rpc_clients[chain].call("eth_blockNumber", [])
     if result and result.startswith("0x"):
         try:
-            balance_raw = int(result, 16)
-            # USDC has 6 decimals: 1.000000 USDC = 1_000_000 raw units = 100 cents.
-            # So 1 cent = 10_000 raw units -- divide by 10**4, not 10**6.
-            return balance_raw // (10 ** 4)
-        except Exception as e:
-            print(f"[blockchain:{rpc_client.chain}] Parse error ({contract}): {e}")
+            return int(result, 16)
+        except Exception:
             return None
-
     return None
 
 
-async def _get_usdc_balance(wallet_address: str) -> Optional[int]:
-    """
-    Query combined on-chain USDC balance across every configured chain and
-    every USDC contract variant on each (see CHAINS above).
+async def _fetch_transfer_logs(chain: str, contract: str, to_address: str, from_block: int, to_block: int) -> tuple[list[dict], bool]:
+    """Fetch every Transfer event log where `to` == to_address, on one
+    contract, chunked into LOG_CHUNK_SIZE windows for public-RPC
+    compatibility.
 
-    Returns balance in cents, or None only if EVERY query on EVERY chain
-    failed (so a transient RPC error on one chain/contract doesn't zero out
-    real balances found on the others).
-    """
-    tasks = []
-    for chain, cfg in CHAINS.items():
-        rpc_client = _rpc_clients[chain]
-        for contract in cfg["contracts"].values():
-            tasks.append(_get_contract_balance(rpc_client, contract, wallet_address))
+    Returns (logs, all_windows_succeeded). The second value matters: if a
+    window's eth_getLogs call fails (e.g. an RPC's archive-access
+    restriction), `result` is None and that window is silently skipped --
+    which must NOT be mistaken for "confirmed zero deposits in this range".
+    Callers use all_windows_succeeded to decide whether to trust an empty
+    result or fall back to a balance-based safety net (see
+    _get_combined_balance)."""
+    if from_block > to_block:
+        return [], True
 
-    balances = await asyncio.gather(*tasks)
+    padded_to = "0x" + "0" * 24 + to_address.lower().replace("0x", "")
+    rpc_client = _rpc_clients[chain]
+    logs = []
+    all_succeeded = True
 
-    successful = [b for b in balances if b is not None]
-    if not successful:
+    window_start = from_block
+    while window_start <= to_block:
+        window_end = min(window_start + LOG_CHUNK_SIZE - 1, to_block)
+        result = await rpc_client.call("eth_getLogs", [{
+            "fromBlock": hex(window_start),
+            "toBlock": hex(window_end),
+            "address": contract,
+            "topics": [TRANSFER_EVENT_TOPIC, None, padded_to],
+        }])
+        if result is None:
+            all_succeeded = False
+        else:
+            logs.extend(result)
+        window_start = window_end + 1
+
+    return logs, all_succeeded
+
+
+def _decode_transfer_log(log: dict) -> Optional[dict]:
+    """Decode one Transfer(address,address,uint256) log entry."""
+    try:
+        topics = log["topics"]
+        from_address = "0x" + topics[1][-40:]
+        amount_raw = int(log["data"], 16)
+        # USDC has 6 decimals: 1_000_000 raw units = 100 cents.
+        amount_cents = amount_raw // (10 ** 4)
+        return {
+            "from_address": from_address,
+            "amount_cents": amount_cents,
+            "tx_hash": log["transactionHash"],
+            "block_number": int(log["blockNumber"], 16),
+        }
+    except (KeyError, IndexError, ValueError) as e:
+        print(f"[blockchain] Failed to decode transfer log: {e}")
         return None
 
-    return sum(successful)
+
+async def _get_combined_balance(chain: str, wallet_address: str) -> Optional[int]:
+    """Safety-net path: raw balanceOf() sum across a chain's USDC contract
+    variants, in cents. Only used when eth_getLogs was unreliable this
+    cycle -- see the fallback block in _scan_wallet_chain. Event logs are
+    preferred because they give per-transfer attribution (source address,
+    tx hash); this just guarantees a real deposit is never silently missed
+    if getLogs access is degraded (e.g. an RPC's archive-range restriction)."""
+    method_sig = "0x70a08231"
+    padded_addr = wallet_address.lower().replace("0x", "").zfill(64)
+    call_data = method_sig + padded_addr
+    rpc_client = _rpc_clients[chain]
+
+    balances = []
+    for contract in CHAINS[chain]["contracts"].values():
+        result = await rpc_client.call("eth_call", [{"to": contract, "data": call_data}, "latest"])
+        if result and result.startswith("0x"):
+            try:
+                balances.append(int(result, 16) // (10 ** 4))
+            except Exception:
+                pass
+
+    return sum(balances) if balances else None
 
 
-async def _settle_deposit(wallet_address: str, db: Session) -> bool:
+async def _scan_wallet_chain(user: User, chain: str, db: Session) -> int:
     """
-    Atomic settlement: check combined on-chain balance and credit the
-    difference if a deposit is detected.
+    Scan one (wallet, chain) for new deposits since the last checkpoint,
+    across every USDC contract variant on that chain. Records each new
+    transfer as a CryptoDeposit and credits the ledger (unless this is the
+    one-time historical backfill pass, which records but doesn't credit).
 
-    Returns True if deposit was credited, False otherwise.
+    Returns the number of deposits newly credited (not counting backfill-only ones).
     """
-    on_chain_balance = await _get_usdc_balance(wallet_address)
-    if on_chain_balance is None:
-        return False
+    wallet_address = user.crypto_wallet_address
+    latest_block = await _get_latest_block(chain)
+    if latest_block is None:
+        return 0
 
-    user = db.query(User).filter(
-        User.crypto_wallet_address.ilike(wallet_address)
+    checkpoint = db.query(ChainScanCheckpoint).filter(
+        ChainScanCheckpoint.wallet_address == wallet_address,
+        ChainScanCheckpoint.chain == chain,
     ).first()
 
-    if not user:
-        return False
+    is_backfill = checkpoint is None
+    from_block = (
+        max(latest_block - BACKFILL_BLOCK_LOOKBACK, 0) if is_backfill
+        else checkpoint.last_scanned_block + 1
+    )
 
-    ledger_balance = user.usdc_balance_cents
-    difference = on_chain_balance - ledger_balance
+    if from_block > latest_block:
+        return 0  # nothing new since last check
 
-    # Only credit if on-chain > ledger (new deposit detected)
-    if difference > 0:
-        old_balance = user.usdc_balance_cents
-        user.usdc_balance_cents = on_chain_balance
+    credited_count = 0
+    logs_fully_reliable = True
+    for contract in CHAINS[chain]["contracts"].values():
+        logs, succeeded = await _fetch_transfer_logs(chain, contract, wallet_address, from_block, latest_block)
+        if not succeeded:
+            logs_fully_reliable = False
+        for log in logs:
+            decoded = _decode_transfer_log(log)
+            if not decoded or decoded["amount_cents"] <= 0:
+                continue
 
-        # Atomic: create audit log before commit (settlement finality)
-        retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365*7)
-        audit = UserAuditLog(
-            user_id=user.id,
-            action="blockchain_deposit_settled",
-            details=json.dumps({
-                "wallet": wallet_address,
-                "on_chain_cents": on_chain_balance,
-                "ledger_before_cents": old_balance,
-                "deposit_detected_cents": difference,
-                "ledger_after_cents": user.usdc_balance_cents,
-                "chains_checked": list(CHAINS.keys()),
-                "timestamp": datetime.utcnow().isoformat(),
-            }),
-            retention_expires_at=retention_expires,
+            # Idempotency: skip if we've already recorded this exact transfer.
+            exists = db.query(CryptoDeposit).filter(
+                CryptoDeposit.chain == chain,
+                CryptoDeposit.tx_hash == decoded["tx_hash"],
+                CryptoDeposit.contract_address == contract,
+                CryptoDeposit.to_address == wallet_address,
+            ).first()
+            if exists:
+                continue
+
+            deposit = CryptoDeposit(
+                user_id=user.id,
+                chain=chain,
+                contract_address=contract,
+                from_address=decoded["from_address"],
+                to_address=wallet_address,
+                amount_cents=decoded["amount_cents"],
+                tx_hash=decoded["tx_hash"],
+                block_number=decoded["block_number"],
+                credited_to_ledger=not is_backfill,
+            )
+            db.add(deposit)
+
+            if not is_backfill:
+                old_balance = user.usdc_balance_cents
+                user.usdc_balance_cents += decoded["amount_cents"]
+                retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+                audit = UserAuditLog(
+                    user_id=user.id,
+                    action="blockchain_deposit_settled",
+                    details=json.dumps({
+                        "chain": chain,
+                        "contract": contract,
+                        "from_address": decoded["from_address"],
+                        "tx_hash": decoded["tx_hash"],
+                        "amount_cents": decoded["amount_cents"],
+                        "ledger_before_cents": old_balance,
+                        "ledger_after_cents": user.usdc_balance_cents,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }),
+                    retention_expires_at=retention_expires,
+                )
+                db.add(audit)
+                credited_count += 1
+                print(f"[blockchain] ✓ SETTLED: {user.email} +${decoded['amount_cents']/100:.2f} "
+                      f"on {chain} from {decoded['from_address']} (tx {decoded['tx_hash'][:10]}...)")
+
+    # Safety net: if eth_getLogs was unreliable this cycle (some RPCs
+    # restrict historical log queries without a paid tier), don't let a
+    # real deposit go undetected just because we couldn't get individual
+    # attribution. Fall back to a raw balance check and credit the gap
+    # without per-transfer detail rather than silently miss it -- this is
+    # exactly the failure mode that caused the original production bug.
+    if not is_backfill and not logs_fully_reliable:
+        combined_balance = await _get_combined_balance(chain, wallet_address)
+        if combined_balance is not None and combined_balance > user.usdc_balance_cents:
+            gap = combined_balance - user.usdc_balance_cents
+            old_balance = user.usdc_balance_cents
+            user.usdc_balance_cents = combined_balance
+            retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+            db.add(UserAuditLog(
+                user_id=user.id,
+                action="blockchain_deposit_settled_fallback",
+                details=json.dumps({
+                    "chain": chain,
+                    "reason": "eth_getLogs unreliable this cycle, used balance-diff fallback",
+                    "amount_cents": gap,
+                    "ledger_before_cents": old_balance,
+                    "ledger_after_cents": user.usdc_balance_cents,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }),
+                retention_expires_at=retention_expires,
+            ))
+            db.add(CryptoDeposit(
+                user_id=user.id,
+                chain=chain,
+                contract_address="multiple",
+                from_address="unknown (event-log detection unavailable this cycle)",
+                to_address=wallet_address,
+                amount_cents=gap,
+                tx_hash=f"balance-fallback-{chain}-{int(datetime.utcnow().timestamp())}",
+                block_number=latest_block,
+                credited_to_ledger=True,
+            ))
+            credited_count += 1
+            print(f"[blockchain] ⚠ FALLBACK SETTLED: {user.email} +${gap/100:.2f} on {chain} "
+                  f"(event logs unreliable, used balance diff)")
+
+    if checkpoint:
+        checkpoint.last_scanned_block = latest_block
+    else:
+        checkpoint = ChainScanCheckpoint(
+            wallet_address=wallet_address,
+            chain=chain,
+            last_scanned_block=latest_block,
+            is_backfilled=True,
         )
-        db.add(audit)
-        db.commit()
+        db.add(checkpoint)
 
-        print(f"[blockchain] ✓ SETTLED: {user.email} +${difference/100:.2f} (on-chain detected)")
-        return True
-
-    return False
+    db.commit()
+    return credited_count
 
 
 async def _monitor_loop():
     """
-    Autonomous settlement loop: query all user wallets every 60 seconds,
-    detect deposits on-chain across every configured chain, auto-credit
-    ledger.
+    Autonomous settlement loop: for every user wallet, scan every configured
+    chain for new deposits every 60 seconds.
     """
     print("[blockchain] 🚀 SETTLEMENT LAYER ONLINE")
     print(f"[blockchain] Chains: {', '.join(CHAINS.keys())}")
@@ -261,7 +418,6 @@ async def _monitor_loop():
         try:
             db = SessionLocal()
             try:
-                # Query all wallets
                 users_with_wallets = db.query(User).filter(
                     User.crypto_wallet_address.isnot(None)
                 ).all()
@@ -270,11 +426,12 @@ async def _monitor_loop():
                     print(f"[blockchain] 🔍 Checking {len(users_with_wallets)} wallets for deposits...")
 
                     for user in users_with_wallets:
-                        try:
-                            if await _settle_deposit(user.crypto_wallet_address, db):
-                                settled_count += 1
-                        except Exception as e:
-                            print(f"[blockchain] Settlement error for {user.email}: {e}")
+                        for chain in CHAINS:
+                            try:
+                                settled_count += await _scan_wallet_chain(user, chain, db)
+                            except Exception as e:
+                                print(f"[blockchain] Scan error for {user.email} on {chain}: {e}")
+                                db.rollback()
 
                     if settled_count > 0:
                         print(f"[blockchain] 📊 Total settlements this session: {settled_count}")

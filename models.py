@@ -322,6 +322,63 @@ class CryptoTransfer(Base):
     )
 
 
+class CryptoDeposit(Base):
+    """An individual incoming USDC transfer detected on-chain by
+    services/blockchain_monitor.py, via Transfer event logs (not just a
+    balanceOf() diff -- that only tells you the total changed, not who
+    sent what, when, or on which chain).
+
+    One row per real on-chain transfer. This is what powers "money in"
+    entries in the transaction list and lets a user see exactly where a
+    deposit came from (source address, chain, tx hash) instead of just
+    watching a balance number change with no explanation.
+    """
+    __tablename__ = "crypto_deposits"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    chain = Column(String, nullable=False)  # "polygon" | "base" | ...
+    contract_address = Column(String, nullable=False)  # which USDC variant (native/bridged)
+    from_address = Column(String, nullable=False)  # external sender
+    to_address = Column(String, nullable=False, index=True)  # this user's FAWN wallet
+    amount_cents = Column(Integer, nullable=False)
+    tx_hash = Column(String, nullable=False, index=True)
+    block_number = Column(Integer, nullable=False)
+    credited_to_ledger = Column(Boolean, default=True, nullable=False)  # False for backfilled history pre-dating this feature
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        CheckConstraint("amount_cents > 0"),
+        # A given on-chain transfer should never be recorded twice.
+        Index('idx_crypto_deposit_dedupe', 'chain', 'tx_hash', 'contract_address', 'to_address', unique=True),
+        Index('idx_crypto_deposit_user_created', 'user_id', 'created_at'),
+    )
+
+
+class ChainScanCheckpoint(Base):
+    """Tracks the last block scanned per (wallet, chain) so the deposit
+    monitor only queries new blocks each cycle instead of re-scanning
+    history every 60 seconds.
+
+    is_backfilled=False means this wallet+chain has never been scanned
+    before; the monitor does one bounded historical look-back to record
+    (but not double-credit) any deposits that predate this feature, then
+    flips this to True so all future scans are purely incremental.
+    """
+    __tablename__ = "chain_scan_checkpoints"
+
+    id = Column(String, primary_key=True, default=new_id)
+    wallet_address = Column(String, nullable=False, index=True)
+    chain = Column(String, nullable=False)
+    last_scanned_block = Column(Integer, nullable=False)
+    is_backfilled = Column(Boolean, default=False, nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index('idx_chain_checkpoint_wallet_chain', 'wallet_address', 'chain', unique=True),
+    )
+
+
 class FeeCollection(Base):
     """Daily/periodic aggregation of platform fees collected.
 

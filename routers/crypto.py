@@ -138,13 +138,16 @@ class TransferResponse(BaseModel):
 
 class TransferHistoryItem(BaseModel):
     transfer_id: str
-    type: str  # "send"
+    type: str  # "send" | "receive"
     amount: float
     fee: float
-    counterparty: str
+    counterparty: str  # for sends: recipient address. for receives: sender address.
     status: str
     memo: str | None
     created_at: str | None
+    # Populated only for type="receive" -- where the deposit actually came from.
+    chain: str | None = None
+    tx_hash: str | None = None
 
 
 @router.post("/create", response_model=CreateWalletResponse, status_code=201)
@@ -377,15 +380,54 @@ async def transfer_history(
     db: Session = Depends(get_db),
 ):
     """
-    Get transaction history for the user (all sends).
+    Get transaction history for the user: both sends and received deposits,
+    merged and sorted newest-first.
 
-    Shows transfers sent from this wallet (recipient address, amount, fee, status).
+    Received deposits are individually attributed (see models.CryptoDeposit,
+    populated by services/blockchain_monitor.py) -- chain, sender address,
+    and tx hash are included so "money in" is never just a balance number
+    with no explanation of where it came from.
     """
+    from models import CryptoDeposit
+
+    capped_limit = min(limit, 200)
+
     try:
-        history = await crypto_wallet.get_transfer_history(user_id, db, limit=min(limit, 200))
-        return history
+        sent_raw = await crypto_wallet.get_transfer_history(user_id, db, limit=capped_limit)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    # get_transfer_history returns plain dicts; normalize to the same
+    # Pydantic type as `received` so sorting/merging below is uniform.
+    sent = [TransferHistoryItem(**item) for item in sent_raw]
+
+    deposits = (
+        db.query(CryptoDeposit)
+        .filter(CryptoDeposit.user_id == user_id, CryptoDeposit.credited_to_ledger.is_(True))
+        .order_by(CryptoDeposit.created_at.desc())
+        .limit(capped_limit)
+        .all()
+    )
+
+    received = [
+        TransferHistoryItem(
+            transfer_id=d.id,
+            type="receive",
+            amount=d.amount_cents / 100.0,
+            fee=0.0,
+            counterparty=d.from_address,
+            status="completed",
+            memo=None,
+            created_at=d.created_at.isoformat() if d.created_at else None,
+            chain=d.chain,
+            tx_hash=d.tx_hash,
+        )
+        for d in deposits
+    ]
+
+    merged = list(sent) + received
+    merged.sort(key=lambda item: item.created_at or "", reverse=True)
+    return merged[:capped_limit]
 
 
 # ── USER DATA & PRIVACY ──
