@@ -49,6 +49,23 @@ class BalanceResponse(BaseModel):
     total_fees_paid: float
 
 
+class NewDepositItem(BaseModel):
+    chain: str
+    from_address: str
+    amount_cents: int
+    amount: float
+    tx_hash: str
+    created_at: str | None
+
+
+class SyncNowResponse(BaseModel):
+    wallet_address: str
+    usdc_balance: float
+    usdc_balance_cents: int
+    newly_credited_count: int
+    new_deposits: list[NewDepositItem] = []
+
+
 class SendUSDCRequest(BaseModel):
     recipient_address: str = Field(..., min_length=42, max_length=42, description="Recipient's 0x... wallet address")
     amount_cents: int = Field(..., gt=0, le=999999999, description="Amount to send in cents (e.g., 1000 = $10.00, max $9,999,999.99)")
@@ -207,6 +224,78 @@ async def get_balance(
     except crypto_wallet.WalletNotInitialized:
         # SECURITY: Don't leak whether user exists; generic message
         raise HTTPException(status_code=404, detail="Wallet not found. Create one with POST /wallet/create.")
+
+
+@router.post("/sync-now", response_model=SyncNowResponse)
+@limiter.limit(RATE_LIMITS["wallet_sync_now"])
+async def sync_wallet_now(
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """
+    On-demand deposit sync: scan every configured chain right now for this
+    user's wallet, instead of waiting for the next background settlement
+    cycle (services/blockchain_monitor.py's _monitor_loop). Lets a user get
+    instant confirmation immediately after sending crypto.
+
+    Reuses the exact same detection logic as the background loop
+    (services.blockchain_monitor._scan_wallet_chain: event logs first,
+    balance-diff fallback if logs are unreliable this cycle) -- this just
+    triggers it synchronously, right now, for one wallet.
+
+    SECURITY: Only scans/returns the authenticated user's own wallet
+    (authorization enforced by get_current_user_id).
+    """
+    import services.blockchain_monitor as blockchain_monitor
+    from models import User, CryptoDeposit
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.crypto_wallet_address:
+        # SECURITY: Don't leak whether user exists; generic message (matches get_balance)
+        raise HTTPException(status_code=404, detail="Wallet not found. Create one with POST /wallet/create.")
+
+    newly_credited_count = 0
+    for chain in blockchain_monitor.CHAINS:
+        try:
+            newly_credited_count += await blockchain_monitor._scan_wallet_chain(user, chain, db)
+        except Exception as e:
+            print(f"[wallet] sync-now scan error for {user.email} on {chain}: {e}")
+            db.rollback()
+
+    new_deposits: list[NewDepositItem] = []
+    if newly_credited_count > 0:
+        # _scan_wallet_chain doesn't return the created rows, only a count --
+        # the freshly credited deposits are the most-recently-created
+        # credited_to_ledger=True rows for this user, so pull exactly that
+        # many rather than modifying _scan_wallet_chain's signature (it's
+        # also covered by services/blockchain_monitor.py's own test suite).
+        recent = (
+            db.query(CryptoDeposit)
+            .filter(CryptoDeposit.user_id == user.id, CryptoDeposit.credited_to_ledger.is_(True))
+            .order_by(CryptoDeposit.created_at.desc())
+            .limit(newly_credited_count)
+            .all()
+        )
+        new_deposits = [
+            NewDepositItem(
+                chain=d.chain,
+                from_address=d.from_address,
+                amount_cents=d.amount_cents,
+                amount=d.amount_cents / 100.0,
+                tx_hash=d.tx_hash,
+                created_at=d.created_at.isoformat() if d.created_at else None,
+            )
+            for d in recent
+        ]
+
+    return SyncNowResponse(
+        wallet_address=user.crypto_wallet_address,
+        usdc_balance=user.usdc_balance_cents / 100.0,
+        usdc_balance_cents=user.usdc_balance_cents,
+        newly_credited_count=newly_credited_count,
+        new_deposits=new_deposits,
+    )
 
 
 # ── TRANSFERS ROUTER ──

@@ -19,6 +19,7 @@ RATE_LIMITS = {
     # Wallet operations
     "wallet_create": "5/hour",  # Creating wallet should be rare (max 5 per hour per IP)
     "wallet_balance": "60/minute",  # Reading balance is safe (frequent checks OK)
+    "wallet_sync_now": "10/minute",  # On-demand chain scan is more expensive (RPC calls) than a balance read; cap it
 
     # Transfer operations
     "transfer_send": "30/hour",  # Prevent transfer spam (max 30 per hour per IP)

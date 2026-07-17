@@ -1,7 +1,7 @@
 """
 Autonomous multi-chain settlement layer for FAWN.
 
-Detects incoming USDC transfers across every chain FAWN supports, every 60
+Detects incoming USDC transfers across every chain FAWN supports, every 15
 seconds, and auto-credits user balances. Uses Alchemy as primary RPC per
 chain with fallback to public RPCs for resilience (DeFi-grade fault
 tolerance).
@@ -410,7 +410,7 @@ async def _scan_wallet_chain(user: User, chain: str, db: Session) -> int:
 async def _monitor_loop():
     """
     Autonomous settlement loop: for every user wallet, scan every configured
-    chain for new deposits every 60 seconds.
+    chain for new deposits every 15 seconds.
     """
     print("[blockchain] 🚀 SETTLEMENT LAYER ONLINE")
     print(f"[blockchain] Chains: {', '.join(CHAINS.keys())}")
@@ -421,7 +421,7 @@ async def _monitor_loop():
     else:
         print("[blockchain] ⚠ Alchemy not set - using public RPCs (rate-limited)")
 
-    check_interval = 60  # seconds
+    check_interval = 15  # seconds
     settled_count = 0
 
     while True:
