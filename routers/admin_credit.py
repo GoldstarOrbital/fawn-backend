@@ -7,11 +7,57 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from database import get_db
-from models import User, UserAuditLog
+from models import User, UserAuditLog, ChainScanCheckpoint, CryptoDeposit
 from routers.admin import require_admin_key
 import json
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.get("/wallet-scan-status")
+async def wallet_scan_status(
+    wallet_address: str,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """Debug helper: see exactly what the blockchain monitor has recorded
+    for a wallet -- per-chain checkpoint (last scanned block, backfilled
+    status) and recent CryptoDeposit records. Lets us tell apart "monitor
+    hasn't reached this block yet" from "monitor is stuck/erroring" from
+    "logs missed it, fallback should catch it next cycle" without needing
+    direct Railway log access."""
+    checkpoints = db.query(ChainScanCheckpoint).filter(
+        ChainScanCheckpoint.wallet_address.ilike(wallet_address)
+    ).all()
+    deposits = db.query(CryptoDeposit).join(User).filter(
+        User.crypto_wallet_address.ilike(wallet_address)
+    ).order_by(CryptoDeposit.created_at.desc()).limit(20).all()
+
+    return {
+        "wallet_address": wallet_address,
+        "checkpoints": [
+            {
+                "chain": c.chain,
+                "last_scanned_block": c.last_scanned_block,
+                "is_backfilled": c.is_backfilled,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            }
+            for c in checkpoints
+        ],
+        "recent_deposits": [
+            {
+                "chain": d.chain,
+                "contract_address": d.contract_address,
+                "from_address": d.from_address,
+                "amount_cents": d.amount_cents,
+                "tx_hash": d.tx_hash,
+                "block_number": d.block_number,
+                "credited_to_ledger": d.credited_to_ledger,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+            }
+            for d in deposits
+        ],
+    }
 
 class ManualCreditRequest(BaseModel):
     wallet_address: str
