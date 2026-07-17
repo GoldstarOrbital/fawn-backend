@@ -14,6 +14,46 @@ import json
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+@router.get("/rpc-health")
+async def rpc_health(
+    chain: str,
+    _: str = Depends(require_admin_key),
+):
+    """Debug helper: call eth_blockNumber against every configured RPC
+    endpoint for one chain, from Railway's own network path, and report
+    exactly what each one returns. A checkpoint that stops advancing could
+    mean every endpoint is failing in a way a local curl from a different
+    network wouldn't reproduce (e.g. a public RPC rate-limiting or
+    blocking Railway's egress IP specifically)."""
+    from services import blockchain_monitor as bm
+    import httpx as httpx_lib
+
+    if chain not in bm.CHAINS:
+        raise HTTPException(status_code=400, detail=f"Unknown chain: {chain}")
+
+    endpoints = bm._get_rpc_endpoints(chain)
+    results = []
+    for endpoint in endpoints:
+        display = endpoint if "alchemy" not in endpoint else endpoint.rsplit("/", 1)[0] + "/***"
+        entry = {"endpoint": display}
+        try:
+            async with httpx_lib.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(endpoint, json={
+                    "jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1,
+                })
+                entry["http_status"] = resp.status_code
+                body = resp.json()
+                if "error" in body:
+                    entry["rpc_error"] = body["error"]
+                else:
+                    entry["result_block"] = int(body["result"], 16) if body.get("result") else None
+        except Exception as e:
+            entry["exception"] = f"{type(e).__name__}: {e}"
+        results.append(entry)
+
+    return {"chain": chain, "endpoints_tried": results}
+
+
 @router.get("/wallet-scan-status")
 async def wallet_scan_status(
     wallet_address: str,
