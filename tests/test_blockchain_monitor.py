@@ -260,6 +260,49 @@ async def test_second_scan_after_backfill_credits_new_deposits(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_rpc_client_falls_through_to_next_endpoint_on_any_json_rpc_error(monkeypatch):
+    # Reproduces a real production incident: Polygon scanning silently
+    # stalled for ~20 hours because polygon-rpc.com (the first fallback)
+    # started returning a JSON-RPC error whose message ("API key disabled,
+    # reason: tenant disabled") didn't match the old whitelist of
+    # retry-worthy substrings ("429"/"rate"/"archive"/"block range"). The
+    # client gave up on the whole call instead of trying rpc.ankr.com /
+    # 1rpc.io/matic, which were working fine. A fallback list is only
+    # useful if ANY endpoint-level error moves on to the next endpoint.
+    client = bm.RPCClient("polygon")
+    assert len(client.endpoints) >= 2
+
+    calls = []
+
+    class _FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self._payload
+
+    class _FakeHttpxClient:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, url, json):
+            calls.append(url)
+            if url == client.endpoints[0]:
+                return _FakeResponse({"error": {"message": "API key disabled, reason: tenant disabled"}})
+            return _FakeResponse({"result": "0x64"})
+
+    monkeypatch.setattr(bm.httpx, "AsyncClient", _FakeHttpxClient)
+
+    result = await client.call("eth_blockNumber", [])
+    assert result == "0x64"
+    assert len(calls) >= 2  # actually fell through past the failing first endpoint
+
+
+@pytest.mark.asyncio
 async def test_falls_back_to_balance_diff_when_event_logs_are_unreliable(monkeypatch):
     # Reproduces a real risk found while shipping this: if eth_getLogs
     # fails on every endpoint (e.g. an RPC's archive-access restriction),

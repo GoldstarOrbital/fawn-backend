@@ -137,14 +137,24 @@ class RPCClient:
                     result = response.json()
 
                     if "error" in result:
-                        error = result.get("error", {})
-                        error_msg = error.get("message", str(error))
-
-                        # Rate limit or archive/range restrictions: try next endpoint
-                        if any(s in str(error_msg).lower() for s in ("429", "rate", "archive", "block range")):
+                        # Any JSON-RPC-level error (rate limits, archive-access
+                        # restrictions, a free-tier endpoint getting its key
+                        # disabled, etc.) means THIS endpoint can't serve the
+                        # request right now -- not that the request itself is
+                        # invalid. Always fall through to the next configured
+                        # endpoint; only give up once every endpoint has been
+                        # tried (confirmed in production: a narrower substring
+                        # check here caused Polygon scanning to silently stall
+                        # for ~20 hours when polygon-rpc.com started returning
+                        # "API key disabled, reason: tenant disabled" -- an
+                        # error that didn't match the old whitelist, so the
+                        # working rpc.ankr.com/1rpc.io fallbacks were never
+                        # tried).
+                        self.failure_count[endpoint] = self.failure_count.get(endpoint, 0) + 1
+                        if attempt < len(self.endpoints) - 1:
                             continue
-
-                        # Real error
+                        error = result.get("error", {})
+                        print(f"[blockchain:{self.chain}] All endpoints failed, last error: {error.get('message', error)}")
                         return None
 
                     self.current_idx = idx
