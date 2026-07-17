@@ -1,10 +1,21 @@
 """
 Autonomous multi-chain settlement layer for FAWN.
 
-Detects incoming USDC transfers across every chain FAWN supports, every 15
+Detects incoming USDC transfers across every chain FAWN supports, every 60
 seconds, and auto-credits user balances. Uses Alchemy as primary RPC per
 chain with fallback to public RPCs for resilience (DeFi-grade fault
 tolerance).
+
+NOTE on polling frequency: this was briefly tightened to 15s, which
+immediately exhausted 1rpc.io/matic's free-tier quota -- Polygon's other
+two fallback endpoints (polygon-rpc.com, rpc.ankr.com) are permanently
+broken (dead free-tier keys unrelated to us), so 1rpc.io/matic was
+already carrying 100% of Polygon's RPC traffic before the interval
+change. Reverted to 60s to stop burning that quota further. Base is
+unaffected by any of this because its FIRST endpoint (mainnet.base.org)
+works directly and never needs to fall through. Real fix for reliably
+fast Polygon polling is a working Alchemy (or similar paid-tier) API
+key -- see ALCHEMY_API_KEY in config.py / _get_rpc_endpoints() above.
 
 Detection works off ERC-20 Transfer *event logs* (eth_getLogs), not a
 balanceOf() diff -- a balance diff can only tell you the total changed, not
@@ -410,7 +421,7 @@ async def _scan_wallet_chain(user: User, chain: str, db: Session) -> int:
 async def _monitor_loop():
     """
     Autonomous settlement loop: for every user wallet, scan every configured
-    chain for new deposits every 15 seconds.
+    chain for new deposits every 60 seconds.
     """
     print("[blockchain] 🚀 SETTLEMENT LAYER ONLINE")
     print(f"[blockchain] Chains: {', '.join(CHAINS.keys())}")
@@ -421,7 +432,7 @@ async def _monitor_loop():
     else:
         print("[blockchain] ⚠ Alchemy not set - using public RPCs (rate-limited)")
 
-    check_interval = 15  # seconds
+    check_interval = 60  # seconds -- see module docstring re: 1rpc.io/matic quota
     settled_count = 0
 
     while True:
