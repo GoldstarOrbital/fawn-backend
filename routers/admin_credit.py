@@ -14,6 +14,55 @@ import json
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+class RewindCheckpointRequest(BaseModel):
+    wallet_address: str
+    chain: str
+    blocks_back: int = 15000
+
+
+@router.post("/rewind-checkpoint")
+async def rewind_checkpoint(
+    req: RewindCheckpointRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """
+    Rewind a (wallet, chain) scan checkpoint so the NEXT background/sync-now
+    cycle re-scans that range via the normal event-log path -- lets the
+    automated system catch a deposit it missed (e.g. during an RPC outage
+    that predates the checkpoint-advancement fix) itself, with real
+    per-transfer attribution, instead of an admin computing and injecting a
+    balance delta by hand.
+
+    Deliberately rewinds rather than deletes the checkpoint: deleting it
+    would make the next scan a fresh backfill pass, which records but does
+    NOT credit deposits (by design, for pre-existing balances). Rewinding
+    keeps it in normal incremental/crediting mode, just starting from an
+    earlier block. Already-recorded deposits in the re-scanned range are
+    no-ops (CryptoDeposit's chain+tx_hash+contract+to_address unique
+    constraint), so this is safe to run even if some of the range was
+    already scanned successfully.
+    """
+    checkpoint = db.query(ChainScanCheckpoint).filter(
+        ChainScanCheckpoint.wallet_address.ilike(req.wallet_address),
+        ChainScanCheckpoint.chain == req.chain,
+    ).first()
+    if not checkpoint:
+        raise HTTPException(status_code=404, detail=f"No checkpoint for {req.wallet_address} on {req.chain}")
+
+    old_block = checkpoint.last_scanned_block
+    checkpoint.last_scanned_block = max(old_block - req.blocks_back, 0)
+    db.commit()
+
+    return {
+        "wallet_address": req.wallet_address,
+        "chain": req.chain,
+        "old_last_scanned_block": old_block,
+        "new_last_scanned_block": checkpoint.last_scanned_block,
+        "blocks_back": req.blocks_back,
+    }
+
+
 @router.get("/rpc-health")
 async def rpc_health(
     chain: str,

@@ -51,6 +51,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import httpx
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import User, UserAuditLog, CryptoDeposit, ChainScanCheckpoint
@@ -368,51 +369,80 @@ async def _scan_wallet_chain(user: User, chain: str, db: Session) -> int:
     # attribution. Fall back to a raw balance check and credit the gap
     # without per-transfer detail rather than silently miss it -- this is
     # exactly the failure mode that caused the original production bug.
+    #
+    # The gap must be computed against what THIS CHAIN has contributed to
+    # the ledger, not the user's total balance -- comparing against the
+    # total (the original implementation) meant the fallback could never
+    # fire for a wallet with funds on multiple chains, since any one
+    # chain's raw balance is routinely smaller than the combined total.
+    # Confirmed in production: a real $1 Polygon deposit went undetected
+    # because $6 (Polygon-only) was never greater than $13.01 (both
+    # chains' total), so the fallback's guard condition was always false.
+    fallback_succeeded = False
     if not is_backfill and not logs_fully_reliable:
         combined_balance = await _get_combined_balance(chain, wallet_address)
-        if combined_balance is not None and combined_balance > user.usdc_balance_cents:
-            gap = combined_balance - user.usdc_balance_cents
-            old_balance = user.usdc_balance_cents
-            user.usdc_balance_cents = combined_balance
-            retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
-            db.add(UserAuditLog(
-                user_id=user.id,
-                action="blockchain_deposit_settled_fallback",
-                details=json.dumps({
-                    "chain": chain,
-                    "reason": "eth_getLogs unreliable this cycle, used balance-diff fallback",
-                    "amount_cents": gap,
-                    "ledger_before_cents": old_balance,
-                    "ledger_after_cents": user.usdc_balance_cents,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }),
-                retention_expires_at=retention_expires,
-            ))
-            db.add(CryptoDeposit(
-                user_id=user.id,
-                chain=chain,
-                contract_address="multiple",
-                from_address="unknown (event-log detection unavailable this cycle)",
-                to_address=wallet_address,
-                amount_cents=gap,
-                tx_hash=f"balance-fallback-{chain}-{int(datetime.utcnow().timestamp())}",
-                block_number=latest_block,
-                credited_to_ledger=True,
-            ))
-            credited_count += 1
-            print(f"[blockchain] ⚠ FALLBACK SETTLED: {user.email} +${gap/100:.2f} on {chain} "
-                  f"(event logs unreliable, used balance diff)")
+        if combined_balance is not None:
+            fallback_succeeded = True
+            chain_credited_total = db.query(func.coalesce(func.sum(CryptoDeposit.amount_cents), 0)).filter(
+                CryptoDeposit.user_id == user.id,
+                CryptoDeposit.chain == chain,
+                CryptoDeposit.credited_to_ledger.is_(True),
+            ).scalar()
 
-    if checkpoint:
-        checkpoint.last_scanned_block = latest_block
-    else:
-        checkpoint = ChainScanCheckpoint(
-            wallet_address=wallet_address,
-            chain=chain,
-            last_scanned_block=latest_block,
-            is_backfilled=True,
-        )
-        db.add(checkpoint)
+            if combined_balance > chain_credited_total:
+                gap = combined_balance - chain_credited_total
+                old_balance = user.usdc_balance_cents
+                user.usdc_balance_cents += gap
+                retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+                db.add(UserAuditLog(
+                    user_id=user.id,
+                    action="blockchain_deposit_settled_fallback",
+                    details=json.dumps({
+                        "chain": chain,
+                        "reason": "eth_getLogs unreliable this cycle, used balance-diff fallback",
+                        "amount_cents": gap,
+                        "ledger_before_cents": old_balance,
+                        "ledger_after_cents": user.usdc_balance_cents,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }),
+                    retention_expires_at=retention_expires,
+                ))
+                db.add(CryptoDeposit(
+                    user_id=user.id,
+                    chain=chain,
+                    contract_address="multiple",
+                    from_address="unknown (event-log detection unavailable this cycle)",
+                    to_address=wallet_address,
+                    amount_cents=gap,
+                    tx_hash=f"balance-fallback-{chain}-{int(datetime.utcnow().timestamp())}",
+                    block_number=latest_block,
+                    credited_to_ledger=True,
+                ))
+                credited_count += 1
+                print(f"[blockchain] ⚠ FALLBACK SETTLED: {user.email} +${gap/100:.2f} on {chain} "
+                      f"(event logs unreliable, used balance diff)")
+
+    # Only mark this range as scanned if we can actually trust what we
+    # saw: either the event logs were fully reliable, or (logs were
+    # unreliable but) the balance fallback successfully reconciled real
+    # on-chain state. If BOTH failed, leave the checkpoint where it was so
+    # the exact same range is retried next cycle -- advancing here would
+    # silently mark an unscanned range as "done," permanently hiding any
+    # deposit inside it from every future scan (this is what let a real
+    # deposit go undetected for good during an earlier RPC outage: the
+    # checkpoint kept moving forward every cycle even though eth_getLogs
+    # was failing every time).
+    if is_backfill or logs_fully_reliable or fallback_succeeded:
+        if checkpoint:
+            checkpoint.last_scanned_block = latest_block
+        else:
+            checkpoint = ChainScanCheckpoint(
+                wallet_address=wallet_address,
+                chain=chain,
+                last_scanned_block=latest_block,
+                is_backfilled=True,
+            )
+            db.add(checkpoint)
 
     db.commit()
     return credited_count

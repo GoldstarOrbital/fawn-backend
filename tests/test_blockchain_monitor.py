@@ -100,6 +100,22 @@ class _FakeRPCClientLogsUnavailable:
         return None
 
 
+class _FakeRPCClientEverythingFails:
+    """Simulates an RPC where BOTH eth_getLogs AND eth_call fail -- e.g. a
+    full outage, not just an archive-access restriction. Neither the event
+    log path nor the balance-diff fallback can produce a trustworthy
+    result this cycle."""
+
+    def __init__(self, chain, latest_block):
+        self.chain = chain
+        self.latest_block = latest_block
+
+    async def call(self, method, params):
+        if method == "eth_blockNumber":
+            return hex(self.latest_block)
+        return None  # eth_getLogs and eth_call both fail
+
+
 def _patch_chain(monkeypatch, chain, latest_block, logs_by_contract=None):
     monkeypatch.setitem(
         bm._rpc_clients, chain,
@@ -340,5 +356,105 @@ async def test_falls_back_to_balance_diff_when_event_logs_are_unreliable(monkeyp
         ).first()
         assert fallback_record is not None
         assert fallback_record.amount_cents == 300
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_does_not_advance_when_logs_and_fallback_both_fail(monkeypatch):
+    # Reproduces a real production bug: the checkpoint used to advance to
+    # latest_block every cycle regardless of whether the scan actually
+    # succeeded. If eth_getLogs failed AND the balance-diff fallback also
+    # failed (e.g. eth_call failing too, not just an archive restriction),
+    # the block range was still silently marked "scanned" -- permanently
+    # hiding any deposit inside it from every future scan, since future
+    # scans only look at blocks after the checkpoint. The checkpoint must
+    # only advance when we can actually trust what we saw this cycle.
+    db = SessionLocal()
+    try:
+        user = _make_user(db)
+
+        _patch_chain(monkeypatch, "polygon", latest_block=100)
+        _patch_chain(monkeypatch, "base", latest_block=100)
+        await bm._scan_wallet_chain(user, "polygon", db)  # establishes checkpoint at block 100
+
+        monkeypatch.setitem(
+            bm._rpc_clients, "polygon",
+            _FakeRPCClientEverythingFails("polygon", latest_block=200),
+        )
+        credited = await bm._scan_wallet_chain(user, "polygon", db)
+        db.refresh(user)
+
+        assert credited == 0
+        assert user.usdc_balance_cents == 0  # nothing credited on a total failure
+
+        checkpoint = db.query(ChainScanCheckpoint).filter(
+            ChainScanCheckpoint.wallet_address == user.crypto_wallet_address,
+            ChainScanCheckpoint.chain == "polygon",
+        ).first()
+        # Must stay at 100, NOT jump to 200 -- blocks 101-200 were never
+        # actually seen and must be retried, not silently marked done.
+        assert checkpoint.last_scanned_block == 100
+
+        # Now the RPC recovers, and blocks 101-200 (including a real
+        # deposit) get retried on the next cycle -- proving nothing was
+        # permanently lost by the earlier total failure.
+        sender = _random_address()
+        contracts = bm.CHAINS["polygon"]["contracts"]
+        log = _transfer_log(sender, user.crypto_wallet_address, 1_000_000, "0xrecovered1", 150)
+        _patch_chain(monkeypatch, "polygon", latest_block=200, logs_by_contract={contracts["usdc_native"]: [log]})
+
+        credited2 = await bm._scan_wallet_chain(user, "polygon", db)
+        db.refresh(user)
+        assert credited2 == 1
+        assert user.usdc_balance_cents == 100
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_fallback_compares_per_chain_balance_not_total_wallet_balance(monkeypatch):
+    # Reproduces the second half of the same production bug: the fallback
+    # compared a single chain's raw on-chain balance against the user's
+    # TOTAL balance across every chain. For a wallet with funds on more
+    # than one chain, one chain's raw balance is routinely smaller than
+    # the combined total, so the fallback's guard condition
+    # (combined_balance > user.usdc_balance_cents) was permanently false
+    # and a real gap on that chain could never be detected. Confirmed in
+    # production: a real $1 Polygon deposit ($6.00 raw) went undetected
+    # because it was never greater than the wallet's $13.01 total (mostly
+    # from Base). The comparison must be scoped to what THIS chain has
+    # actually contributed to the ledger, not the whole-wallet balance.
+    contracts = bm.CHAINS["polygon"]["contracts"]
+    db = SessionLocal()
+    try:
+        user = _make_user(db)
+        # Simulate a wallet whose balance is mostly attributable to a
+        # DIFFERENT chain (e.g. Base) -- total balance far exceeds what
+        # Polygon alone has ever contributed.
+        user.usdc_balance_cents = 1301
+        db.commit()
+
+        _patch_chain(monkeypatch, "polygon", latest_block=100)
+        _patch_chain(monkeypatch, "base", latest_block=100)
+        await bm._scan_wallet_chain(user, "polygon", db)  # establishes checkpoint, nothing credited yet
+
+        # Polygon's raw on-chain balance ($6.00) is smaller than the
+        # wallet's total ($13.01) but larger than what Polygon itself has
+        # ever been credited for (still $0 -- this test's Polygon has
+        # contributed nothing to the ledger yet).
+        monkeypatch.setitem(
+            bm._rpc_clients, "polygon",
+            _FakeRPCClientLogsUnavailable("polygon", latest_block=200, balance_by_contract={
+                contracts["usdc_native"]: 6_000_000,
+                contracts["usdc_bridged"]: 0,
+            }),
+        )
+
+        credited = await bm._scan_wallet_chain(user, "polygon", db)
+        db.refresh(user)
+
+        assert credited == 1
+        assert user.usdc_balance_cents == 1301 + 600  # the real Polygon gap, credited on top of the existing total
     finally:
         db.close()
