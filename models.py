@@ -372,6 +372,17 @@ class ChainScanCheckpoint(Base):
     chain = Column(String, nullable=False)
     last_scanned_block = Column(Integer, nullable=False)
     is_backfilled = Column(Boolean, default=False, nullable=False)
+    # Balance already attributable to this chain that predates per-transfer
+    # CryptoDeposit tracking (e.g. reconciled via a one-off manual credit
+    # before this feature existed). The balance-diff fallback compares
+    # on-chain balance against this PLUS the sum of credited CryptoDeposit
+    # rows for this chain -- without it, that comparison under-counts
+    # anything credited before CryptoDeposit rows existed, and re-credits
+    # it as if it were new (confirmed in production: caused a real $5
+    # double-credit). Defaults to 0, which is correct for every wallet+
+    # chain scanned from now on -- this field only matters for the
+    # handful of checkpoints that predate it.
+    pre_ledger_baseline_cents = Column(Integer, default=0, nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (

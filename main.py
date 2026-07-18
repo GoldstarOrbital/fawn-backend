@@ -130,6 +130,9 @@ def _init_db_schema():
         except Exception as e:
             print(f"[startup] crypto_wallets setup failed (continuing): {e}")
 
+        # chain_scan_checkpoints columns added after initial schema
+        _patch("chain_scan_checkpoints", "pre_ledger_baseline_cents", "pre_ledger_baseline_cents INTEGER DEFAULT 0 NOT NULL")
+
         # audit logging (user_audit_log table is created automatically via create_all)
     except Exception as e:
         print(f"[startup] schema patch pass failed (continuing): {e}")

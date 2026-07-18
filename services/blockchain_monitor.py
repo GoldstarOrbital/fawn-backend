@@ -378,16 +378,26 @@ async def _scan_wallet_chain(user: User, chain: str, db: Session) -> int:
     # Confirmed in production: a real $1 Polygon deposit went undetected
     # because $6 (Polygon-only) was never greater than $13.01 (both
     # chains' total), so the fallback's guard condition was always false.
+    #
+    # "What this chain has contributed" is checkpoint.pre_ledger_baseline_cents
+    # (anything credited before CryptoDeposit tracking existed -- 0 for
+    # every checkpoint created from now on) PLUS the sum of credited
+    # CryptoDeposit rows for this chain. Using only the CryptoDeposit sum
+    # (without the baseline) under-counts pre-existing chains and causes
+    # the opposite bug: re-crediting balance that was already correctly
+    # reconciled (confirmed in production: caused a real $5 double-credit
+    # on a chain whose balance predated this system).
     fallback_succeeded = False
-    if not is_backfill and not logs_fully_reliable:
+    if not is_backfill and not logs_fully_reliable and checkpoint is not None:
         combined_balance = await _get_combined_balance(chain, wallet_address)
         if combined_balance is not None:
             fallback_succeeded = True
-            chain_credited_total = db.query(func.coalesce(func.sum(CryptoDeposit.amount_cents), 0)).filter(
+            credited_deposits_total = db.query(func.coalesce(func.sum(CryptoDeposit.amount_cents), 0)).filter(
                 CryptoDeposit.user_id == user.id,
                 CryptoDeposit.chain == chain,
                 CryptoDeposit.credited_to_ledger.is_(True),
             ).scalar()
+            chain_credited_total = checkpoint.pre_ledger_baseline_cents + credited_deposits_total
 
             if combined_balance > chain_credited_total:
                 gap = combined_balance - chain_credited_total

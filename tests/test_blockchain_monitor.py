@@ -458,3 +458,58 @@ async def test_fallback_compares_per_chain_balance_not_total_wallet_balance(monk
         assert user.usdc_balance_cents == 1301 + 600  # the real Polygon gap, credited on top of the existing total
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_fallback_does_not_recredit_pre_existing_chain_baseline(monkeypatch):
+    # Reproduces a real production double-credit: a chain whose balance was
+    # entirely established before CryptoDeposit tracking existed (e.g. via
+    # a one-off manual reconciliation) has zero credited CryptoDeposit rows
+    # for that chain. The FIRST time its balance-diff fallback ever fires,
+    # comparing against "sum of credited CryptoDeposit rows" alone sees
+    # $0 already credited and re-credits the chain's ENTIRE on-chain
+    # balance as if none of it had ever been accounted for -- a real
+    # incident credited a chain's full pre-existing balance a second time.
+    # ChainScanCheckpoint.pre_ledger_baseline_cents exists to prevent
+    # exactly this: it represents balance already reflected in the ledger
+    # that predates CryptoDeposit tracking, and must be added to the
+    # credited-rows sum before comparing against live on-chain balance.
+    contracts = bm.CHAINS["base"]["contracts"]
+    db = SessionLocal()
+    try:
+        user = _make_user(db)
+        # This chain's $8.01 was already fully reflected in the ledger
+        # long ago (e.g. a manual reconciliation), with no CryptoDeposit
+        # rows to show for it -- exactly the real-world scenario.
+        user.usdc_balance_cents = 801
+        db.commit()
+
+        _patch_chain(monkeypatch, "polygon", latest_block=100)
+        _patch_chain(monkeypatch, "base", latest_block=100)
+        await bm._scan_wallet_chain(user, "base", db)  # establishes checkpoint
+
+        checkpoint = db.query(ChainScanCheckpoint).filter(
+            ChainScanCheckpoint.wallet_address == user.crypto_wallet_address,
+            ChainScanCheckpoint.chain == "base",
+        ).first()
+        checkpoint.pre_ledger_baseline_cents = 801  # seeded, as an admin would via /admin/set-chain-baseline
+        db.commit()
+
+        # Base's event logs become unreliable, but its on-chain balance is
+        # UNCHANGED from what's already correctly reflected in the ledger.
+        monkeypatch.setitem(
+            bm._rpc_clients, "base",
+            _FakeRPCClientLogsUnavailable("base", latest_block=200, balance_by_contract={
+                contracts["usdc_native"]: 8_010_000,  # still $8.01, nothing new
+                contracts["usdc_bridged"]: 0,
+            }),
+        )
+
+        credited = await bm._scan_wallet_chain(user, "base", db)
+        db.refresh(user)
+
+        # Must NOT re-credit the pre-existing $8.01 a second time.
+        assert credited == 0
+        assert user.usdc_balance_cents == 801
+    finally:
+        db.close()

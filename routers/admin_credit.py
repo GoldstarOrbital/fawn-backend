@@ -63,6 +63,121 @@ async def rewind_checkpoint(
     }
 
 
+class SetChainBaselineRequest(BaseModel):
+    wallet_address: str
+    chain: str
+    baseline_cents: int
+
+
+@router.post("/set-chain-baseline")
+async def set_chain_baseline(
+    req: SetChainBaselineRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """
+    Set ChainScanCheckpoint.pre_ledger_baseline_cents -- the amount already
+    attributable to a (wallet, chain) that predates per-transfer
+    CryptoDeposit tracking (e.g. balance reconciled via a one-off manual
+    credit before this feature existed).
+
+    Why this exists: services.blockchain_monitor's balance-diff fallback
+    compares live on-chain balance against pre_ledger_baseline_cents PLUS
+    the sum of credited CryptoDeposit rows for that chain, to decide how
+    much (if any) is a genuinely new, uncredited deposit. Without a correct
+    baseline, a chain whose balance predates CryptoDeposit tracking looks
+    like it has contributed $0 so far -- so the very first time its
+    fallback fires, it re-credits the ENTIRE historical balance as if it
+    were new. Confirmed in production: caused a real $5 double-credit.
+
+    This should only ever need to be set once per (wallet, chain), for
+    wallets that had a balance before this system started tracking
+    per-chain contributions. Every checkpoint created from now on defaults
+    to 0, which is correct.
+    """
+    checkpoint = db.query(ChainScanCheckpoint).filter(
+        ChainScanCheckpoint.wallet_address.ilike(req.wallet_address),
+        ChainScanCheckpoint.chain == req.chain,
+    ).first()
+    if not checkpoint:
+        raise HTTPException(status_code=404, detail=f"No checkpoint for {req.wallet_address} on {req.chain}")
+
+    old_baseline = checkpoint.pre_ledger_baseline_cents
+    checkpoint.pre_ledger_baseline_cents = req.baseline_cents
+    db.commit()
+
+    return {
+        "wallet_address": req.wallet_address,
+        "chain": req.chain,
+        "old_baseline_cents": old_baseline,
+        "new_baseline_cents": checkpoint.pre_ledger_baseline_cents,
+    }
+
+
+class FixDepositAmountRequest(BaseModel):
+    tx_hash: str
+    correct_amount_cents: int
+    reason: str
+
+
+@router.post("/fix-deposit-amount")
+async def fix_deposit_amount(
+    req: FixDepositAmountRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """
+    Correct a specific CryptoDeposit's recorded amount (e.g. one credited
+    by the balance-diff fallback before a baseline was seeded, so it
+    over-counted a pre-existing balance as brand new). Adjusts the user's
+    ledger by exactly the delta, atomically, with a full audit log --
+    unlike POST /admin/credit-balance, this corrects the specific
+    misattributed record itself (so the user's transaction history stays
+    accurate) rather than just nudging the total.
+    """
+    deposit = db.query(CryptoDeposit).filter(CryptoDeposit.tx_hash == req.tx_hash).first()
+    if not deposit:
+        raise HTTPException(status_code=404, detail=f"No CryptoDeposit with tx_hash {req.tx_hash}")
+
+    user = db.query(User).filter(User.id == deposit.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"No user for deposit {req.tx_hash}")
+
+    old_deposit_amount = deposit.amount_cents
+    delta = req.correct_amount_cents - old_deposit_amount
+    old_balance = user.usdc_balance_cents
+
+    deposit.amount_cents = req.correct_amount_cents
+    if deposit.credited_to_ledger:
+        user.usdc_balance_cents += delta
+
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+    db.add(UserAuditLog(
+        user_id=user.id,
+        action="deposit_amount_corrected",
+        details=json.dumps({
+            "tx_hash": req.tx_hash,
+            "old_deposit_amount_cents": old_deposit_amount,
+            "new_deposit_amount_cents": req.correct_amount_cents,
+            "ledger_before_cents": old_balance,
+            "ledger_after_cents": user.usdc_balance_cents,
+            "reason": req.reason,
+            "timestamp": datetime.utcnow().isoformat(),
+        }),
+        retention_expires_at=retention_expires,
+    ))
+    db.commit()
+
+    return {
+        "tx_hash": req.tx_hash,
+        "email": user.email,
+        "old_deposit_amount": f"${old_deposit_amount / 100:.2f}",
+        "new_deposit_amount": f"${req.correct_amount_cents / 100:.2f}",
+        "old_balance": f"${old_balance / 100:.2f}",
+        "new_balance": f"${user.usdc_balance_cents / 100:.2f}",
+    }
+
+
 @router.get("/rpc-health")
 async def rpc_health(
     chain: str,
