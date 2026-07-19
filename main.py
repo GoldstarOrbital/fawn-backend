@@ -8,12 +8,17 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from asgi_correlation_id import CorrelationIdMiddleware, correlation_id
+import structlog
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
 from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, podcast, money_review, investing, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue
 from config import settings
+from logging_config import configure_logging
+
+configure_logging()
 
 if sentry_sdk and os.environ.get("SENTRY_DSN"):
     sentry_sdk.init(
@@ -191,6 +196,26 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 ALLOWED_ORIGINS = settings.allowed_origins_list
+
+# Added first so it's outermost -- every other middleware and every
+# request handler runs with the correlation ID already bound to
+# structlog's contextvars, so any log emitted anywhere during this
+# request (including nested calls into OFAC screening, address-risk
+# checks, or on-chain settlement) carries the same ID automatically.
+app.add_middleware(CorrelationIdMiddleware)
+
+
+@app.middleware("http")
+async def bind_correlation_id_to_structlog(request: Request, call_next):
+    """asgi-correlation-id stores the request ID in its own contextvar;
+    structlog's merge_contextvars processor reads from structlog's own
+    contextvars, so this copies one into the other for the request's
+    duration -- otherwise every log line from services/onchain_send.py,
+    services/sanctions_screening.py, etc. would have no request_id at all."""
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(request_id=correlation_id.get())
+    return await call_next(request)
+
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
 

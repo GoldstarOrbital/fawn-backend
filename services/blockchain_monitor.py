@@ -56,6 +56,13 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import User, UserAuditLog, CryptoDeposit, ChainScanCheckpoint
 from config import settings
+from logging_config import get_logger
+
+# Named `logger`, not `log` -- this file uses `log` pervasively as a
+# local variable name for individual raw blockchain event-log entries
+# (e.g. `for log in logs:`, `_decode_transfer_log(log)`), which would
+# silently shadow a module-level `log` logger inside those scopes.
+logger = get_logger(__name__)
 
 # ---- Chain + contract registry ----
 # alchemy_slug is the subdomain Alchemy uses for that chain's RPC
@@ -166,7 +173,7 @@ class RPCClient:
                         if attempt < len(self.endpoints) - 1:
                             continue
                         error = result.get("error", {})
-                        print(f"[blockchain:{self.chain}] All endpoints failed, last error: {error.get('message', error)}")
+                        logger.error("rpc.all_endpoints_failed", chain=self.chain, error=error.get("message", error))
                         return None
 
                     self.current_idx = idx
@@ -177,7 +184,7 @@ class RPCClient:
                 self.failure_count[endpoint] = self.failure_count.get(endpoint, 0) + 1
                 if attempt < len(self.endpoints) - 1:
                     continue
-                print(f"[blockchain:{self.chain}] All endpoints failed: {e}")
+                logger.error("rpc.all_endpoints_failed", chain=self.chain, error=str(e))
                 return None
 
         return None
@@ -249,7 +256,7 @@ def _decode_transfer_log(log: dict) -> Optional[dict]:
             "block_number": int(log["blockNumber"], 16),
         }
     except (KeyError, IndexError, ValueError) as e:
-        print(f"[blockchain] Failed to decode transfer log: {e}")
+        logger.error("rpc.decode_transfer_log_failed", error=str(e))
         return None
 
 
@@ -360,8 +367,14 @@ async def _scan_wallet_chain(user: User, chain: str, db: Session) -> int:
                 )
                 db.add(audit)
                 credited_count += 1
-                print(f"[blockchain] ✓ SETTLED: {user.email} +${decoded['amount_cents']/100:.2f} "
-                      f"on {chain} from {decoded['from_address']} (tx {decoded['tx_hash'][:10]}...)")
+                logger.info(
+                    "deposit.settled",
+                    user_email=user.email,
+                    amount_cents=decoded["amount_cents"],
+                    chain=chain,
+                    from_address=decoded["from_address"],
+                    tx_hash=decoded["tx_hash"],
+                )
 
     # Safety net: if eth_getLogs was unreliable this cycle (some RPCs
     # restrict historical log queries without a paid tier), don't let a
@@ -429,8 +442,13 @@ async def _scan_wallet_chain(user: User, chain: str, db: Session) -> int:
                     credited_to_ledger=True,
                 ))
                 credited_count += 1
-                print(f"[blockchain] ⚠ FALLBACK SETTLED: {user.email} +${gap/100:.2f} on {chain} "
-                      f"(event logs unreliable, used balance diff)")
+                logger.warning(
+                    "deposit.settled_via_balance_fallback",
+                    user_email=user.email,
+                    amount_cents=gap,
+                    chain=chain,
+                    reason="event_logs_unreliable_this_cycle",
+                )
 
     # Only mark this range as scanned if we can actually trust what we
     # saw: either the event logs were fully reliable, or (logs were
@@ -463,14 +481,12 @@ async def _monitor_loop():
     Autonomous settlement loop: for every user wallet, scan every configured
     chain for new deposits every 60 seconds.
     """
-    print("[blockchain] 🚀 SETTLEMENT LAYER ONLINE")
-    print(f"[blockchain] Chains: {', '.join(CHAINS.keys())}")
-    for chain in CHAINS:
-        print(f"[blockchain:{chain}] {len(_rpc_clients[chain].endpoints)} RPC endpoints configured")
-    if settings.alchemy_api_key:
-        print("[blockchain] ✓ Alchemy enabled (primary, all chains)")
-    else:
-        print("[blockchain] ⚠ Alchemy not set - using public RPCs (rate-limited)")
+    logger.info(
+        "monitor.started",
+        chains=list(CHAINS.keys()),
+        rpc_endpoints={chain: len(_rpc_clients[chain].endpoints) for chain in CHAINS},
+        alchemy_enabled=bool(settings.alchemy_api_key),
+    )
 
     check_interval = 60  # seconds -- see module docstring re: 1rpc.io/matic quota
     settled_count = 0
@@ -484,18 +500,18 @@ async def _monitor_loop():
                 ).all()
 
                 if users_with_wallets:
-                    print(f"[blockchain] 🔍 Checking {len(users_with_wallets)} wallets for deposits...")
+                    logger.info("monitor.scan_cycle_started", wallet_count=len(users_with_wallets))
 
                     for user in users_with_wallets:
                         for chain in CHAINS:
                             try:
                                 settled_count += await _scan_wallet_chain(user, chain, db)
                             except Exception as e:
-                                print(f"[blockchain] Scan error for {user.email} on {chain}: {e}")
+                                logger.error("monitor.scan_error", user_email=user.email, chain=chain, error=str(e))
                                 db.rollback()
 
                     if settled_count > 0:
-                        print(f"[blockchain] 📊 Total settlements this session: {settled_count}")
+                        logger.info("monitor.session_settlement_total", settled_count=settled_count)
 
             finally:
                 db.close()
@@ -503,10 +519,10 @@ async def _monitor_loop():
             await asyncio.sleep(check_interval)
 
         except asyncio.CancelledError:
-            print("[blockchain] ⏹ Settlement layer shutting down")
+            logger.info("monitor.shutting_down")
             raise
         except Exception as e:
-            print(f"[blockchain] Monitor error (will retry): {e}")
+            logger.error("monitor.loop_error", error=str(e))
             await asyncio.sleep(check_interval)
 
 

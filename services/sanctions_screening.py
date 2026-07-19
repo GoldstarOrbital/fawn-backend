@@ -38,6 +38,9 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 from models import SanctionedAddress, SanctionsListRefresh, UserAuditLog
+from logging_config import get_logger
+
+log = get_logger(__name__)
 
 OFAC_SDN_CSV_URL = "https://sanctionslistservice.ofac.treas.gov/api/publicationpreview/exports/sdn.csv"
 
@@ -128,23 +131,24 @@ def check_recipient_not_sanctioned(sender_id: str, recipient_address: str, db: S
     ))
     db.commit()
 
+    log.warning("sanctions.send_blocked", sender_id=sender_id, recipient_address=recipient_address)
     raise RecipientSanctioned(
         "This recipient address cannot be sent to -- it matches OFAC's sanctions list."
     )
 
 
 async def _refresh_loop():
-    print("[sanctions] Screening list refresh loop started")
+    log.info("sanctions.refresh_loop_started")
     while True:
         try:
             db = SessionLocal()
             try:
                 result = await refresh_sanctions_list(db)
-                print(f"[sanctions] Refresh: {result}")
+                log.info("sanctions.refresh_completed", **result)
             finally:
                 db.close()
         except Exception as e:
-            print(f"[sanctions] Refresh loop error (will retry): {e}")
+            log.error("sanctions.refresh_loop_error", error=str(e))
 
         import asyncio
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)

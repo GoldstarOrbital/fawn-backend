@@ -20,6 +20,9 @@ from services.sanctions_screening import RecipientSanctioned
 from services.analytics import capture, EVENTS
 from rate_limiting import limiter, RATE_LIMITS
 from config import settings
+from logging_config import get_logger
+
+log = get_logger(__name__)
 import re
 
 router = APIRouter(prefix="/wallet", tags=["crypto"])
@@ -194,16 +197,12 @@ async def create_wallet(
         # SECURITY: Log creation (for audit trail) but don't log seed phrase
         return result
     except ValueError as e:
-        import traceback
         error_msg = str(e)
-        print(f"[wallet] ValueError creating wallet for {user_id}: {error_msg}")
-        traceback.print_exc()
+        log.error("wallet.create_failed_value_error", user_id=user_id, error=error_msg, exc_info=True)
         # Return more specific error messages for debugging
         raise HTTPException(status_code=400, detail=error_msg)
     except Exception as e:
-        import traceback
-        print(f"[wallet] Exception creating wallet for {user_id}: {e}")
-        traceback.print_exc()
+        log.error("wallet.create_failed_exception", user_id=user_id, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Wallet error: {str(e)[:100]}")
 
 
@@ -263,7 +262,7 @@ async def sync_wallet_now(
         try:
             newly_credited_count += await blockchain_monitor._scan_wallet_chain(user, chain, db)
         except Exception as e:
-            print(f"[wallet] sync-now scan error for {user.email} on {chain}: {e}")
+            log.error("wallet.sync_now_scan_error", user_email=user.email, chain=chain, error=str(e))
             db.rollback()
 
     new_deposits: list[NewDepositItem] = []
