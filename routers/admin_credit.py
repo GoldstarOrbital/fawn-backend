@@ -7,11 +7,211 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from database import get_db
-from models import User, UserAuditLog, ChainScanCheckpoint, CryptoDeposit
+from models import User, UserAuditLog, ChainScanCheckpoint, CryptoDeposit, CryptoTransfer
 from routers.admin import require_admin_key
 import json
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.get("/pending-transfers")
+async def pending_transfers(
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """List sends held for manual review (large first-time-recipient
+    sends -- see services/crypto_wallet.py::send_usdc). Nothing has moved
+    yet for any of these; the ledger was never touched."""
+    rows = db.query(CryptoTransfer).filter(
+        CryptoTransfer.status == "pending_review"
+    ).order_by(CryptoTransfer.created_at.asc()).all()
+
+    sender_emails = {
+        u.id: u.email for u in db.query(User).filter(
+            User.id.in_([t.sender_id for t in rows])
+        ).all()
+    }
+
+    return {
+        "pending": [
+            {
+                "transfer_id": t.id,
+                "sender_id": t.sender_id,
+                "sender_email": sender_emails.get(t.sender_id),
+                "recipient_address": t.recipient_address,
+                "amount_cents": t.amount_cents,
+                "fee_cents": t.fee_cents,
+                "memo": t.memo,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in rows
+        ]
+    }
+
+
+class ApproveTransferRequest(BaseModel):
+    transfer_id: str
+
+
+@router.post("/approve-transfer")
+async def approve_transfer(
+    req: ApproveTransferRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """Execute a held send for real -- signs and broadcasts on-chain now,
+    then settles the ledger. Re-runs every normal safeguard (balance,
+    hard limits, velocity, sanctions screening) at approval time, not
+    just at hold time -- state may have changed since the hold was
+    created (e.g. the sender made other sends in the meantime, or the
+    recipient was added to the sanctions list).
+
+    Claims the transfer with an atomic conditional UPDATE (pending_review
+    -> approving) before doing anything else. Without this, two
+    concurrent approve requests for the same transfer_id (a double-click,
+    a retried request) could both pass a plain SELECT-then-check and both
+    execute the real on-chain send -- a genuine double-send, not just a
+    duplicate audit log entry. Only the request that successfully claims
+    the row proceeds; the other gets a clear 409, not a silent no-op.
+    """
+    from services import onchain_send
+
+    claimed = db.query(CryptoTransfer).filter(
+        CryptoTransfer.id == req.transfer_id,
+        CryptoTransfer.status == "pending_review",
+    ).update({"status": "approving"}, synchronize_session=False)
+    db.commit()
+
+    if claimed == 0:
+        # If the row still showed pending_review, OUR update would have
+        # claimed it -- so right after a failed claim it can only be:
+        # doesn't exist at all (404), or exists in some other status,
+        # meaning a concurrent request already claimed/settled it (409).
+        existing = db.query(CryptoTransfer).filter(CryptoTransfer.id == req.transfer_id).first()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Transfer is already {existing.status} -- not available to approve.")
+        raise HTTPException(status_code=404, detail=f"No pending-review transfer with id {req.transfer_id}")
+
+    transfer = db.query(CryptoTransfer).filter(CryptoTransfer.id == req.transfer_id).first()
+
+    try:
+        sender = db.query(User).filter(User.id == transfer.sender_id).first()
+        if not sender:
+            raise HTTPException(status_code=404, detail="Sender no longer exists")
+
+        total_needed = transfer.amount_cents + transfer.fee_cents
+        if sender.usdc_balance_cents < total_needed:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Sender's balance (${sender.usdc_balance_cents/100:.2f}) no longer covers "
+                       f"this transfer + fee (${total_needed/100:.2f})."
+            )
+
+        settlement = await onchain_send.send_onchain_usdc(sender, transfer.recipient_address, transfer.amount_cents, db)
+
+        transfer.status = "completed"
+        transfer.tx_hash = settlement["tx_hash"]
+        transfer.chain = settlement["chain"]
+        transfer.completed_at = datetime.utcnow()
+
+        sender.usdc_balance_cents -= total_needed
+        sender.total_fees_paid_cents += transfer.fee_cents
+
+        retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+        db.add(UserAuditLog(
+            user_id=sender.id,
+            action="send_approved_after_review",
+            details=json.dumps({
+                "transfer_id": transfer.id,
+                "amount_cents": transfer.amount_cents,
+                "chain": settlement["chain"],
+                "tx_hash": settlement["tx_hash"],
+                "timestamp": datetime.utcnow().isoformat(),
+            }),
+            retention_expires_at=retention_expires,
+        ))
+        db.commit()
+
+        return {
+            "transfer_id": transfer.id,
+            "status": "completed",
+            "chain": settlement["chain"],
+            "tx_hash": settlement["tx_hash"],
+            "new_sender_balance": f"${sender.usdc_balance_cents/100:.2f}",
+        }
+    except Exception:
+        # Whatever went wrong, release the claim -- an "approving" row
+        # stuck forever (unretryable, invisible to /admin/pending-transfers
+        # since that only lists pending_review) is worse than letting a
+        # failed approval be tried again.
+        db.rollback()
+        transfer_retry = db.query(CryptoTransfer).filter(CryptoTransfer.id == req.transfer_id).first()
+        if transfer_retry and transfer_retry.status == "approving":
+            transfer_retry.status = "pending_review"
+            db.commit()
+        raise
+
+
+class RejectTransferRequest(BaseModel):
+    transfer_id: str
+    reason: str = "rejected_by_admin"
+
+
+@router.post("/reject-transfer")
+async def reject_transfer(
+    req: RejectTransferRequest,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """Reject a held send -- no funds ever moved, the ledger was never
+    touched, this just marks it closed."""
+    transfer = db.query(CryptoTransfer).filter(
+        CryptoTransfer.id == req.transfer_id,
+        CryptoTransfer.status == "pending_review",
+    ).first()
+    if not transfer:
+        raise HTTPException(status_code=404, detail=f"No pending-review transfer with id {req.transfer_id}")
+
+    transfer.status = "rejected"
+
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+    db.add(UserAuditLog(
+        user_id=transfer.sender_id,
+        action="send_rejected_after_review",
+        details=json.dumps({
+            "transfer_id": transfer.id,
+            "reason": req.reason,
+            "timestamp": datetime.utcnow().isoformat(),
+        }),
+        retention_expires_at=retention_expires,
+    ))
+    db.commit()
+
+    return {"transfer_id": transfer.id, "status": "rejected"}
+
+
+@router.get("/sanctions-status")
+async def sanctions_status(
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+):
+    """Debug/ops helper: is the OFAC screening list actually being kept
+    current? A screening check that silently runs against an empty or
+    stale list is worse than no screening at all if nobody notices."""
+    from models import SanctionedAddress, SanctionsListRefresh
+
+    total_addresses = db.query(SanctionedAddress).count()
+    last_refresh = db.query(SanctionsListRefresh).order_by(SanctionsListRefresh.created_at.desc()).first()
+
+    return {
+        "total_sanctioned_addresses": total_addresses,
+        "last_refresh": {
+            "status": last_refresh.status,
+            "addresses_found": last_refresh.addresses_found,
+            "error": last_refresh.error,
+            "at": last_refresh.created_at.isoformat() if last_refresh.created_at else None,
+        } if last_refresh else None,
+    }
 
 
 class RewindCheckpointRequest(BaseModel):

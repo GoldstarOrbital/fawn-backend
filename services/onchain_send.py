@@ -49,7 +49,7 @@ from sqlalchemy import func as sa_func
 from database import SessionLocal
 from models import User, CryptoWallet, UserAuditLog, CryptoTransfer, GasStationTopup
 from services import blockchain_monitor as bm
-from services.crypto_wallet import _decrypt_private_key
+from services.crypto_wallet import _decrypt_private_key, _is_valid_eth_address
 from config import settings
 
 # EVM chain IDs -- required for transaction signing (EIP-155 replay
@@ -124,21 +124,33 @@ class GasStationLimitExceeded(Exception):
     pass
 
 
+class VelocityLimitExceeded(Exception):
+    """Too many sends in too short a window, independent of amount -- a
+    compromised account draining via many small transactions (each
+    individually under the per-tx $ cap) still trips this."""
+    pass
+
+
 def _check_send_limits(sender: User, amount_cents: int, db: Session) -> None:
-    """Hard per-transaction and rolling-24h caps on custodial sends. These
-    exist independent of the sender's real balance -- a wallet legitimately
-    holding $10,000 still shouldn't be able to move all of it in a single
-    compromised-session transaction."""
+    """Hard per-transaction, rolling-24h, and velocity (count-based) caps
+    on custodial sends. These exist independent of the sender's real
+    balance -- a wallet legitimately holding $10,000 still shouldn't be
+    able to move all of it in a single compromised-session transaction,
+    and a wallet sending 50 small transfers in five minutes is suspicious
+    regardless of how small each one is."""
     if amount_cents > settings.max_send_cents_per_tx:
         raise SendLimitExceeded(
             f"${amount_cents/100:.2f} exceeds the ${settings.max_send_cents_per_tx/100:.2f} "
             f"per-transaction limit."
         )
 
-    since = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+    now = datetime.now(tz=timezone.utc)
+    since_24h = now - timedelta(hours=24)
+    since_1h = now - timedelta(hours=1)
+
     sent_last_24h = db.query(sa_func.coalesce(sa_func.sum(CryptoTransfer.amount_cents), 0)).filter(
         CryptoTransfer.sender_id == sender.id,
-        CryptoTransfer.created_at >= since,
+        CryptoTransfer.created_at >= since_24h,
         CryptoTransfer.status == "completed",
     ).scalar()
 
@@ -149,6 +161,41 @@ def _check_send_limits(sender: User, amount_cents: int, db: Session) -> None:
             f"${settings.max_send_cents_per_day/100:.2f} daily limit. "
             f"Already sent in the last 24h: ${sent_last_24h/100:.2f}."
         )
+
+    count_last_hour = db.query(sa_func.count(CryptoTransfer.id)).filter(
+        CryptoTransfer.sender_id == sender.id,
+        CryptoTransfer.created_at >= since_1h,
+        CryptoTransfer.status == "completed",
+    ).scalar()
+    if count_last_hour >= settings.max_sends_per_hour:
+        raise VelocityLimitExceeded(
+            f"You've made {count_last_hour} sends in the last hour, at the "
+            f"{settings.max_sends_per_hour}/hour limit. Try again shortly."
+        )
+
+    count_last_day = db.query(sa_func.count(CryptoTransfer.id)).filter(
+        CryptoTransfer.sender_id == sender.id,
+        CryptoTransfer.created_at >= since_24h,
+        CryptoTransfer.status == "completed",
+    ).scalar()
+    if count_last_day >= settings.max_sends_per_day:
+        raise VelocityLimitExceeded(
+            f"You've made {count_last_day} sends in the last 24h, at the "
+            f"{settings.max_sends_per_day}/day limit. Try again tomorrow."
+        )
+
+
+def is_first_time_recipient(sender_id: str, recipient_address: str, db: Session) -> bool:
+    """True if sender has no prior completed send to this exact address.
+    Used to decide whether a large send needs a manual-review hold --
+    immediate drain to a brand-new address is the classic
+    account-takeover pattern."""
+    prior = db.query(CryptoTransfer).filter(
+        CryptoTransfer.sender_id == sender_id,
+        CryptoTransfer.recipient_address.ilike(recipient_address),
+        CryptoTransfer.status == "completed",
+    ).first()
+    return prior is None
 
 
 def _get_gas_station_account():
@@ -323,8 +370,8 @@ async def send_onchain_usdc(
         {"chain": "polygon"|"base", "tx_hash": "0x...", "amount_cents": int}
 
     Raises:
-        CannotSignTransaction, SendLimitExceeded, NoChainHasSufficientBalance,
-        GasStationLimitExceeded, OnchainSendFailed
+        CannotSignTransaction, SendLimitExceeded, VelocityLimitExceeded,
+        NoChainHasSufficientBalance, GasStationLimitExceeded, OnchainSendFailed
     """
     if sender.wallet_type != "fawn_custodial":
         raise CannotSignTransaction(
@@ -332,9 +379,25 @@ async def send_onchain_usdc(
             f"only fawn_custodial wallets can be sent from server-side."
         )
 
+    # This function signs and broadcasts a real, irreversible transaction
+    # -- it must not trust its callers to have validated recipient_address
+    # already. Both current call sites (crypto_wallet.send_usdc and the
+    # admin approve-transfer endpoint) do validate first, but a malformed
+    # address reaching _sign_transfer's zfill(64) padding would silently
+    # encode a DIFFERENT destination address rather than failing loudly --
+    # this is the one function in the codebase where that failure mode is
+    # not acceptable to leave to caller discipline.
+    if not _is_valid_eth_address(recipient_address):
+        raise CannotSignTransaction(f"Invalid recipient address: {recipient_address}")
+
     # Hard custody limits, checked before anything touches the key or the
     # network -- fail fast on an out-of-bounds request.
     _check_send_limits(sender, amount_cents, db)
+
+    # OFAC screening -- a legal requirement, checked before the key is
+    # ever touched. See services/sanctions_screening.py.
+    from services.sanctions_screening import check_recipient_not_sanctioned
+    check_recipient_not_sanctioned(sender.id, recipient_address, db)
 
     wallet_row = db.query(CryptoWallet).filter(
         CryptoWallet.wallet_address.ilike(sender.crypto_wallet_address)

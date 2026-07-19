@@ -18,7 +18,7 @@ import pytest
 from eth_account import Account
 
 from database import SessionLocal
-from models import User, CryptoWallet
+from models import User, CryptoWallet, CryptoTransfer
 from services import blockchain_monitor as bm
 from services import onchain_send
 from services.crypto_wallet import _encrypt_private_key
@@ -359,5 +359,136 @@ async def test_gas_station_daily_topup_cap_is_enforced(monkeypatch):
 
         with pytest.raises(onchain_send.GasStationLimitExceeded):
             await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 500, db)
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_send_to_sanctioned_recipient_is_blocked_end_to_end(monkeypatch):
+    # Integration check: OFAC screening is actually wired into the real
+    # send path, not just unit-tested in isolation.
+    from models import SanctionedAddress
+
+    db = SessionLocal()
+    try:
+        sanctioned = "0x" + "5" * 40
+        db.add(SanctionedAddress(address=sanctioned, currency_label="ETH"))
+        db.commit()
+
+        user, _ = _make_custodial_user(db)
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=100_000))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        from services.sanctions_screening import RecipientSanctioned
+        with pytest.raises(RecipientSanctioned):
+            await onchain_send.send_onchain_usdc(user, sanctioned, 500, db)
+
+        # A clean recipient should still work fine.
+        result = await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 500, db)
+        assert result["tx_hash"].startswith("0x")
+    finally:
+        db.close()
+
+
+# ── Fraud & risk controls: velocity limits ──
+
+@pytest.mark.asyncio
+async def test_hourly_velocity_limit_is_enforced(monkeypatch):
+    from config import settings
+    monkeypatch.setattr(settings, "max_sends_per_hour", 3)
+    monkeypatch.setattr(settings, "max_sends_per_day", 100)  # isolate the hourly check
+
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=1_000_000))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        for _ in range(3):
+            result = await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 100, db)
+            db.add(CryptoTransfer(sender_id=user.id, recipient_address="0x" + "1" * 40, amount_cents=100, status="completed", chain=result["chain"], tx_hash=result["tx_hash"]))
+            db.commit()
+
+        with pytest.raises(onchain_send.VelocityLimitExceeded):
+            await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 100, db)
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_daily_velocity_limit_is_enforced(monkeypatch):
+    from config import settings
+    monkeypatch.setattr(settings, "max_sends_per_hour", 100)  # isolate the daily check
+    monkeypatch.setattr(settings, "max_sends_per_day", 2)
+
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=1_000_000))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        for _ in range(2):
+            result = await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 100, db)
+            db.add(CryptoTransfer(sender_id=user.id, recipient_address="0x" + "1" * 40, amount_cents=100, status="completed", chain=result["chain"], tx_hash=result["tx_hash"]))
+            db.commit()
+
+        with pytest.raises(onchain_send.VelocityLimitExceeded):
+            await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 100, db)
+    finally:
+        db.close()
+
+
+def test_is_first_time_recipient():
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        recipient = "0x" + "9" * 40
+
+        assert onchain_send.is_first_time_recipient(user.id, recipient, db) is True
+
+        db.add(CryptoTransfer(sender_id=user.id, recipient_address=recipient, amount_cents=100, status="completed"))
+        db.commit()
+
+        assert onchain_send.is_first_time_recipient(user.id, recipient, db) is False
+        # A different, never-sent-to address is still first-time.
+        assert onchain_send.is_first_time_recipient(user.id, "0x" + "8" * 40, db) is True
+    finally:
+        db.close()
+
+
+def test_is_first_time_recipient_ignores_non_completed_transfers():
+    # A pending_review or rejected transfer to this address shouldn't
+    # count as "known" -- nothing was ever actually sent there.
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        recipient = "0x" + "9" * 40
+        db.add(CryptoTransfer(sender_id=user.id, recipient_address=recipient, amount_cents=100, status="pending_review"))
+        db.commit()
+
+        assert onchain_send.is_first_time_recipient(user.id, recipient, db) is True
+    finally:
+        db.close()
+
+
+# ── Adversarial-review fixes ──
+
+@pytest.mark.asyncio
+async def test_malformed_recipient_address_is_rejected_before_signing(monkeypatch):
+    # send_onchain_usdc must not trust callers to have validated the
+    # recipient -- a malformed address reaching the raw signing code
+    # would silently zfill(64)-pad into a WRONG destination rather than
+    # failing loudly.
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=100_000))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        with pytest.raises(onchain_send.CannotSignTransaction):
+            await onchain_send.send_onchain_usdc(user, "0xnotanaddress", 500, db)
+
+        with pytest.raises(onchain_send.CannotSignTransaction):
+            await onchain_send.send_onchain_usdc(user, "0x" + "1" * 38, 500, db)  # 2 chars short
     finally:
         db.close()

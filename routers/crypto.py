@@ -16,6 +16,7 @@ from database import get_db
 from dependencies import get_current_user_id
 from services import crypto_wallet
 from services import onchain_send
+from services.sanctions_screening import RecipientSanctioned
 from services.analytics import capture, EVENTS
 from rate_limiting import limiter, RATE_LIMITS
 from config import settings
@@ -340,6 +341,10 @@ async def send_usdc(
         raise HTTPException(status_code=422, detail=str(e))
     except onchain_send.SendLimitExceeded as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except onchain_send.VelocityLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except RecipientSanctioned as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except onchain_send.NoChainHasSufficientBalance as e:
         raise HTTPException(status_code=402, detail=str(e))
     except onchain_send.GasStationLimitExceeded as e:
@@ -422,6 +427,10 @@ async def send_to_user_or_wallet(
     except onchain_send.CannotSignTransaction as e:
         raise HTTPException(status_code=422, detail=str(e))
     except onchain_send.SendLimitExceeded as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except onchain_send.VelocityLimitExceeded as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except RecipientSanctioned as e:
         raise HTTPException(status_code=403, detail=str(e))
     except onchain_send.NoChainHasSufficientBalance as e:
         raise HTTPException(status_code=402, detail=str(e))

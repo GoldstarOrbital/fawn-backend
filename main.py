@@ -136,6 +136,44 @@ def _init_db_schema():
         # crypto_transfers columns added after initial schema
         _patch("crypto_transfers", "chain", "chain VARCHAR")
 
+        # crypto_transfers.status CHECK constraint widened to allow
+        # 'pending_review' (held for admin approval -- large first-time-
+        # recipient sends) and 'rejected' (held send an admin declined).
+        # create_all() never touches an existing table's constraints, and
+        # the original constraint was unnamed, so Postgres auto-generated
+        # an unpredictable name -- it has to be looked up by inspecting
+        # the actual CHECK definition, not assumed, before it can be
+        # dropped and replaced with the new (explicitly named) one.
+        try:
+            with engine.begin() as conn:
+                existing = conn.execute(text("""
+                    SELECT con.conname
+                    FROM pg_constraint con
+                    JOIN pg_class rel ON rel.oid = con.conrelid
+                    WHERE rel.relname = 'crypto_transfers'
+                      AND con.contype = 'c'
+                      AND pg_get_constraintdef(con.oid) ILIKE '%status%'
+                """)).fetchall()
+                for row in existing:
+                    conname = row[0]
+                    if conname != "ck_crypto_transfers_status":
+                        conn.execute(text(f'ALTER TABLE crypto_transfers DROP CONSTRAINT "{conname}"'))
+                        print(f"[startup] dropped old crypto_transfers status constraint: {conname}")
+
+                already_correct = conn.execute(text(
+                    "SELECT 1 FROM pg_constraint WHERE conname = 'ck_crypto_transfers_status'"
+                )).fetchone()
+                if not already_correct:
+                    conn.execute(text(
+                        "ALTER TABLE crypto_transfers ADD CONSTRAINT ck_crypto_transfers_status "
+                        "CHECK (status IN ('pending', 'completed', 'failed', 'pending_review', 'approving', 'rejected'))"
+                    ))
+                    print("[startup] added ck_crypto_transfers_status constraint")
+        except Exception as e:
+            # Not fatal -- e.g. running on SQLite locally, which has no
+            # pg_constraint catalog at all.
+            print(f"[startup] crypto_transfers status constraint patch skipped/failed (continuing): {e}")
+
         # audit logging (user_audit_log table is created automatically via create_all)
     except Exception as e:
         print(f"[startup] schema patch pass failed (continuing): {e}")
@@ -273,6 +311,20 @@ async def _start_blockchain_monitor():
 
     task = start_blockchain_monitor()
     print("[blockchain] Settlement layer started")
+
+
+@app.on_event("startup")
+async def _start_sanctions_screening():
+    """Start the OFAC sanctions-list refresh loop (services/sanctions_screening.py).
+
+    Blocks sends to recipient addresses on OFAC's SDN list -- a legal
+    requirement, not optional. Refreshes daily; screening still works
+    against the last successfully fetched list across restarts.
+    """
+    from services.sanctions_screening import start_sanctions_screening
+
+    start_sanctions_screening()
+    print("[sanctions] Screening loop started")
 
 
 @app.on_event("startup")

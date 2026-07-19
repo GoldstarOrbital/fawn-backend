@@ -71,6 +71,20 @@ class Settings(BaseSettings):
     max_send_cents_per_tx: int = 200_000  # $2,000 per single send
     max_send_cents_per_day: int = 500_000  # $5,000 per user per rolling 24h
     max_gas_topups_per_day: int = 200  # platform-wide, protects the gas station wallet from a runaway loop
+
+    # ---- Fraud & risk controls ----
+    # Dollar caps alone don't catch a compromised account rapidly draining
+    # via many small transactions, each individually under the per-tx cap --
+    # velocity limits bound transaction COUNT, independent of amount.
+    max_sends_per_hour: int = 10
+    max_sends_per_day: int = 30
+    # A first-time send to a never-before-seen recipient, above this
+    # amount, is held for manual review instead of settling immediately --
+    # the classic account-takeover pattern is immediate drain to a new,
+    # attacker-controlled address. Set to the per-tx cap to effectively
+    # disable this (every send already under review-equivalent scrutiny
+    # via the per-tx cap) if it's ever too aggressive for real usage.
+    new_recipient_review_threshold_cents: int = 50_000  # $500
     allowed_origins: str = (
         "https://goldstarorbital.com,"
         "https://www.goldstarorbital.com,"

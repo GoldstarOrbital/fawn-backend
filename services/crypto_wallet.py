@@ -380,10 +380,20 @@ async def send_usdc(
         InvalidAddress if recipient_address is malformed
         InsufficientBalance if sender can't cover transfer + fee (ledger check)
         onchain_send.CannotSignTransaction if sender's wallet can't be signed for
+        onchain_send.SendLimitExceeded, onchain_send.VelocityLimitExceeded if a hard cap is hit
         onchain_send.NoChainHasSufficientBalance if no single chain covers the amount
         onchain_send.OnchainSendFailed if broadcasting the transaction fails
+
+    A large first-time send doesn't raise or settle -- it returns with
+    status "pending_review" and no tx_hash, held for an admin to approve
+    via POST /admin/approve-transfer (see routers/admin_credit.py). This
+    is the classic account-takeover pattern (immediate drain to a brand-
+    new address); settling it instantly regardless of how suspicious it
+    looks isn't acceptable for a wallet FAWN can sign for on the user's
+    behalf.
     """
     from services import onchain_send
+    from config import settings
 
     if not _is_valid_eth_address(recipient_address):
         raise InvalidAddress(f"Invalid recipient address: {recipient_address}")
@@ -405,6 +415,55 @@ async def send_usdc(
             f"Insufficient balance. Have: ${sender.usdc_balance_cents / 100:.2f}, "
             f"need: ${total_needed / 100:.2f} (transfer + {fee_display} fee)"
         )
+
+    if (
+        amount_cents >= settings.new_recipient_review_threshold_cents
+        and onchain_send.is_first_time_recipient(sender_id, recipient_address, db)
+    ):
+        # The per-transaction hard cap is static (doesn't depend on when
+        # it's checked), so enforce it here too, not just at approval
+        # time -- a request that structurally can never be approved
+        # shouldn't be admitted to the review queue in the first place,
+        # where it would just sit stuck with no automatic cleanup.
+        if amount_cents > settings.max_send_cents_per_tx:
+            raise onchain_send.SendLimitExceeded(
+                f"${amount_cents/100:.2f} exceeds the ${settings.max_send_cents_per_tx/100:.2f} "
+                f"per-transaction limit."
+            )
+
+        transfer = CryptoTransfer(
+            sender_id=sender_id,
+            recipient_address=recipient_address,
+            amount_cents=amount_cents,
+            fee_cents=fee_cents,
+            status="pending_review",
+            memo=memo,
+        )
+        db.add(transfer)
+        retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+        db.add(UserAuditLog(
+            user_id=sender_id,
+            action="send_held_for_review",
+            details=json.dumps({
+                "transfer_id": transfer.id,
+                "recipient": recipient_address[:6] + "..." + recipient_address[-4:],
+                "amount_cents": amount_cents,
+                "reason": "first-time recipient above review threshold",
+                "timestamp": datetime.utcnow().isoformat(),
+            }),
+            retention_expires_at=retention_expires,
+        ))
+        db.commit()
+        return {
+            "transfer_id": transfer.id,
+            "amount": amount_cents / 100.0,
+            "fee": fee_cents / 100.0,
+            "total_debited": total_needed / 100.0,
+            "status": "pending_review",
+            "chain": None,
+            "tx_hash": None,
+            "created_at": transfer.created_at.isoformat() if transfer.created_at else None,
+        }
 
     # Settle on-chain FIRST -- only touch the ledger after real money has
     # actually moved. A failure here must leave the ledger untouched.

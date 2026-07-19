@@ -314,9 +314,22 @@ class CryptoTransfer(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Constraints and indexes
+    # status also includes "pending_review" (held for admin approval --
+    # see services/crypto_wallet.py::send_usdc's new-recipient review
+    # hold), "approving" (a transient claimed-for-approval state that
+    # prevents two concurrent approve-transfer requests from both
+    # executing the same held send -- see routers/admin_credit.py), and
+    # "rejected" (held send an admin declined; no funds ever moved).
+    # Named explicitly so main.py's schema patch can find and replace
+    # this exact constraint on an existing production database -- an
+    # unnamed CheckConstraint gets an unpredictable auto-generated name
+    # in Postgres, which a DROP CONSTRAINT patch can't target reliably.
     __table_args__ = (
         CheckConstraint("amount_cents > 0"),
-        CheckConstraint("status IN ('pending', 'completed', 'failed')"),
+        CheckConstraint(
+            "status IN ('pending', 'completed', 'failed', 'pending_review', 'approving', 'rejected')",
+            name="ck_crypto_transfers_status",
+        ),
         Index('idx_crypto_transfer_sender_created', 'sender_id', 'created_at'),
         Index('idx_crypto_transfer_recipient_date', 'recipient_address', 'created_at'),
         Index('idx_crypto_transfer_pending', 'sender_id', 'status'),
@@ -408,6 +421,38 @@ class GasStationTopup(Base):
     wallet_address = Column(String, nullable=False, index=True)
     amount_wei = Column(String, nullable=False)  # string: wei values can exceed 64-bit int range
     tx_hash = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SanctionedAddress(Base):
+    """EVM-format (0x...) addresses from OFAC's SDN list, refreshed
+    periodically by services/sanctions_screening.py. Persisted (not just
+    held in memory) so the screening list survives a restart and isn't
+    dependent on a fresh OFAC fetch succeeding before it can be used --
+    the app boots with whatever was last successfully fetched.
+
+    address is lowercased at write time; screening checks lowercase.
+    """
+    __tablename__ = "sanctioned_addresses"
+
+    id = Column(String, primary_key=True, default=new_id)
+    address = Column(String, nullable=False, unique=True, index=True)
+    source = Column(String, nullable=False, default="OFAC_SDN")
+    currency_label = Column(String, nullable=True)  # e.g. "ETH" -- as OFAC tagged it, informational only
+    first_seen_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_confirmed_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SanctionsListRefresh(Base):
+    """One row per attempted OFAC list refresh -- lets an admin (or an
+    alert) see at a glance whether the screening list is actually being
+    kept current, not just trust that a background loop exists."""
+    __tablename__ = "sanctions_list_refreshes"
+
+    id = Column(String, primary_key=True, default=new_id)
+    status = Column(String, nullable=False)  # "success" | "failed"
+    addresses_found = Column(Integer, nullable=True)
+    error = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
