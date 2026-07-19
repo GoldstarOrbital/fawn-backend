@@ -403,14 +403,25 @@ def lookup_user_status(
 ) -> Dict:
     """Debug helper: see exactly where a user's wallet/account setup stands,
     without needing direct DB access. No password/SSN/secrets exposed."""
+    from models import CryptoWallet
+
     user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
     if not user:
         raise HTTPException(status_code=404, detail="No user with that email.")
+
+    crypto_wallet_row = None
+    if user.crypto_wallet_address:
+        crypto_wallet_row = db.query(CryptoWallet).filter(
+            CryptoWallet.wallet_address.ilike(user.crypto_wallet_address)
+        ).first()
 
     return {
         "email": user.email,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "wallet_initialized": bool(user.wallet_initialized),
         "crypto_wallet_address": user.crypto_wallet_address,
+        "wallet_type": user.wallet_type,
         "alpaca_account_id": user.alpaca_account_id,
+        "crypto_wallet_row_exists": crypto_wallet_row is not None,
+        "has_encrypted_private_key": bool(crypto_wallet_row and crypto_wallet_row.encrypted_private_key),
     }
