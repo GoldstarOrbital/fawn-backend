@@ -360,6 +360,41 @@ def get_stats_overview(
     }
 
 
+@router.get("/users")
+def list_users(
+    db: Session = Depends(get_db),
+    _: str = Depends(require_admin_key),
+    limit: int = Query(default=500, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+) -> Dict:
+    """List registered user emails with basic signup/wallet status --
+    matches the existing /admin/waitlist pattern (which already exposes
+    waitlist emails the same way), just for full User accounts. No
+    password hashes or other sensitive fields returned."""
+    total = db.query(func.count(User.id)).scalar() or 0
+    rows = (
+        db.query(User)
+        .order_by(User.created_at.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "users": [
+            {
+                "email": u.email,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+                "wallet_initialized": bool(u.wallet_initialized),
+                "school": u.school,
+            }
+            for u in rows
+        ],
+    }
+
+
 @router.get("/users/lookup")
 def lookup_user_status(
     email: str = Query(..., description="Account email to look up"),
