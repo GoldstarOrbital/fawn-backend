@@ -70,7 +70,13 @@ async def refresh_sanctions_list(db: Session) -> dict:
     them into SanctionedAddress. Records a SanctionsListRefresh row either
     way (success or failure) so refresh health is queryable."""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # OFAC's endpoint 302-redirects to a signed S3 URL -- httpx does
+        # not follow redirects by default, and treats an unfollowed
+        # redirect as a raise_for_status() error. Confirmed live: the
+        # first production refresh failed with exactly this (0 addresses
+        # loaded, screening correctly failed open rather than blocking
+        # sends -- see module docstring on fail-open behavior).
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp = await client.get(OFAC_SDN_CSV_URL)
             resp.raise_for_status()
             csv_text = resp.text
