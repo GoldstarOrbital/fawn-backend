@@ -14,46 +14,6 @@ import json
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-@router.post("/bootstrap-alembic-stamp")
-async def bootstrap_alembic_stamp(
-    db: Session = Depends(get_db),
-    _: str = Depends(require_admin_key),
-):
-    """
-    ONE-TIME bootstrap: mark Alembic's baseline migration as already
-    applied, without running any DDL. Production's schema already
-    matches the baseline (built up over time via the old _patch()
-    system in main.py, which keeps running unchanged) -- this just
-    writes one row to a new alembic_version table so Alembic knows
-    where the DB stands, enabling real migrations going forward.
-
-    Runs inside the app's own process using its own already-configured
-    DATABASE_URL, rather than requiring direct production DB
-    credentials to be handled outside the app. Refuses to run if
-    alembic_version already has a row, so this can't accidentally
-    re-stamp over real migration history later. This endpoint is meant
-    to be removed from the codebase right after its one real use --
-    see alembic/README.md.
-    """
-    from sqlalchemy import text
-    from alembic.config import Config
-    from alembic import command
-
-    existing = db.execute(text(
-        "SELECT to_regclass('public.alembic_version') IS NOT NULL"
-        if "postgresql" in str(db.bind.url)
-        else "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
-    )).scalar()
-    if existing:
-        raise HTTPException(status_code=409, detail="alembic_version already exists -- refusing to re-stamp.")
-
-    cfg = Config("alembic.ini")
-    command.stamp(cfg, "head")
-
-    current = db.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    return {"status": "stamped", "revision": current}
-
-
 @router.get("/pending-transfers")
 async def pending_transfers(
     db: Session = Depends(get_db),

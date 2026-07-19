@@ -416,10 +416,18 @@ async def send_usdc(
             f"need: ${total_needed / 100:.2f} (transfer + {fee_display} fee)"
         )
 
-    if (
+    from services.address_risk import flag_if_risky_for_review
+
+    is_large_new_recipient = (
         amount_cents >= settings.new_recipient_review_threshold_cents
         and onchain_send.is_first_time_recipient(sender_id, recipient_address, db)
-    ):
+    )
+    # Checked regardless of amount/recipient-history -- a real-time
+    # threat-intel flag (phishing, theft, mixer, etc.) doesn't get safer
+    # just because the amount is small or it's a repeat recipient.
+    is_flagged_risky = await flag_if_risky_for_review(sender_id, recipient_address, db)
+
+    if is_large_new_recipient or is_flagged_risky:
         # The per-transaction hard cap is static (doesn't depend on when
         # it's checked), so enforce it here too, not just at approval
         # time -- a request that structurally can never be approved
@@ -431,6 +439,10 @@ async def send_usdc(
                 f"per-transaction limit."
             )
 
+        hold_reason = (
+            "recipient flagged by address risk check" if is_flagged_risky
+            else "first-time recipient above review threshold"
+        )
         transfer = CryptoTransfer(
             sender_id=sender_id,
             recipient_address=recipient_address,
@@ -448,7 +460,7 @@ async def send_usdc(
                 "transfer_id": transfer.id,
                 "recipient": recipient_address[:6] + "..." + recipient_address[-4:],
                 "amount_cents": amount_cents,
-                "reason": "first-time recipient above review threshold",
+                "reason": hold_reason,
                 "timestamp": datetime.utcnow().isoformat(),
             }),
             retention_expires_at=retention_expires,

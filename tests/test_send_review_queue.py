@@ -17,8 +17,34 @@ from jose import jwt
 from config import settings
 from database import SessionLocal
 from models import User, CryptoWallet, CryptoTransfer, UserAuditLog
+from services import address_risk
 from services import blockchain_monitor as bm
 from services.crypto_wallet import _encrypt_private_key, send_usdc
+
+
+class _CleanAddressRiskClient:
+    """send_usdc now unconditionally checks address risk on every send --
+    default every test in this file to a mocked "clean" response so
+    existing tests don't make real network calls to GoPlus. Tests that
+    specifically want a "flagged" response override this per-test."""
+    def __init__(self, *a, **kw):
+        pass
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *a):
+        return False
+    async def get(self, url, params=None):
+        class _R:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"result": {f: "0" for f in address_risk.RISK_FLAGS} | {"data_source": ""}}
+        return _R()
+
+
+@pytest.fixture(autouse=True)
+def _mock_address_risk_clean(monkeypatch):
+    monkeypatch.setattr(address_risk.httpx, "AsyncClient", _CleanAddressRiskClient)
 
 
 def _make_custodial_user(db):
@@ -325,5 +351,50 @@ async def test_hold_creation_rejects_amount_over_per_tx_cap(monkeypatch):
 
         # Nothing should have been created.
         assert db.query(CryptoTransfer).filter(CryptoTransfer.sender_id == user.id).count() == 0
+    finally:
+        db.close()
+
+
+class _FlaggedAddressRiskClient:
+    def __init__(self, *a, **kw):
+        pass
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *a):
+        return False
+    async def get(self, url, params=None):
+        class _R:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"result": {f: "0" for f in address_risk.RISK_FLAGS} | {"stealing_attack": "1", "data_source": "SlowMist"}}
+        return _R()
+
+
+@pytest.mark.asyncio
+async def test_flagged_address_holds_even_small_amount_to_repeat_recipient(monkeypatch):
+    # Proves the address-risk hold trigger is independent of the existing
+    # amount/first-time-recipient trigger -- a small send to a recipient
+    # the sender has sent to before must still be held if that recipient
+    # is flagged by real-time threat intel.
+    monkeypatch.setattr(address_risk.httpx, "AsyncClient", _FlaggedAddressRiskClient)
+    _patch_chains(monkeypatch)
+
+    db = SessionLocal()
+    try:
+        user = _make_custodial_user(db)
+        recipient = "0x" + "7" * 40
+        # Establish recipient history (repeat recipient) at a small amount.
+        db.add(CryptoTransfer(sender_id=user.id, recipient_address=recipient, amount_cents=100, status="completed"))
+        db.commit()
+
+        result = await send_usdc(user.id, recipient, 500, db, is_internal=False)  # small, repeat recipient
+        assert result["status"] == "pending_review"
+
+        log = db.query(UserAuditLog).filter(
+            UserAuditLog.user_id == user.id,
+            UserAuditLog.action == "recipient_flagged_by_address_risk_check",
+        ).first()
+        assert log is not None
     finally:
         db.close()
