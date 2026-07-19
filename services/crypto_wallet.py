@@ -339,14 +339,21 @@ async def send_usdc(
     is_internal: bool = False,
 ) -> dict:
     """
-    Send USDC from sender to recipient (internal ledger transfer).
+    Send USDC from sender to recipient, settled with a real on-chain
+    transaction (see services/onchain_send.py).
 
     Fee structure:
     - Internal (FAWN-to-FAWN): $0.01
     - External (outside wallets/banks): $0.50
+    The fee itself is a FAWN platform fee deducted from the ledger only
+    -- only amount_cents (not the fee) moves on-chain to the recipient.
 
-    No blockchain transaction — instant settlement in our ledger.
-    No gas fees.
+    Only "fawn_custodial" wallets can be sent from -- FAWN needs a usable
+    stored private key to sign. "non_custodial" wallets (and any
+    custodial wallet with no usable key -- see create_wallet's
+    round-trip guard) raise CannotSignTransaction; there is no ledger-
+    only fallback, since silently moving nothing while claiming success
+    is exactly the bug this replaces.
 
     Args:
         sender_id: FAWN user ID of sender
@@ -363,15 +370,21 @@ async def send_usdc(
             "fee": 0.01 or 0.50,  # platform fee based on type (USD float)
             "total_debited": 10.01 or 10.50,  # total taken from sender (USD float)
             "status": "completed",
-            "tx_hash": None,  # on-chain hash if settled on-chain
+            "chain": "polygon" | "base",
+            "tx_hash": "0x...",  # real on-chain transaction hash
             "created_at": "2026-07-08T...",
         }
 
     Raises:
         WalletNotInitialized if sender has no wallet
         InvalidAddress if recipient_address is malformed
-        InsufficientBalance if sender can't cover transfer + fee
+        InsufficientBalance if sender can't cover transfer + fee (ledger check)
+        onchain_send.CannotSignTransaction if sender's wallet can't be signed for
+        onchain_send.NoChainHasSufficientBalance if no single chain covers the amount
+        onchain_send.OnchainSendFailed if broadcasting the transaction fails
     """
+    from services import onchain_send
+
     if not _is_valid_eth_address(recipient_address):
         raise InvalidAddress(f"Invalid recipient address: {recipient_address}")
 
@@ -382,7 +395,9 @@ async def send_usdc(
     # Determine fee based on transfer type
     fee_cents = INTERNAL_TRANSFER_FEE_CENTS if is_internal else EXTERNAL_TRANSFER_FEE_CENTS
 
-    # Check balance
+    # Cheap ledger pre-check before touching any RPC -- the authoritative
+    # per-chain check happens inside send_onchain_usdc, since a wallet's
+    # ledger total can exceed what any single chain actually holds.
     total_needed = amount_cents + fee_cents
     if sender.usdc_balance_cents < total_needed:
         fee_display = "$0.01" if is_internal else "$0.50"
@@ -391,6 +406,10 @@ async def send_usdc(
             f"need: ${total_needed / 100:.2f} (transfer + {fee_display} fee)"
         )
 
+    # Settle on-chain FIRST -- only touch the ledger after real money has
+    # actually moved. A failure here must leave the ledger untouched.
+    settlement = await onchain_send.send_onchain_usdc(sender, recipient_address, amount_cents, db)
+
     # Create transfer record
     transfer = CryptoTransfer(
         sender_id=sender_id,
@@ -398,6 +417,8 @@ async def send_usdc(
         amount_cents=amount_cents,
         fee_cents=fee_cents,
         status="completed",
+        tx_hash=settlement["tx_hash"],
+        chain=settlement["chain"],
         memo=memo,
         completed_at=datetime.utcnow(),
     )
@@ -418,6 +439,8 @@ async def send_usdc(
             "amount_cents": amount_cents,
             "fee_cents": fee_cents,
             "transfer_type": "internal" if is_internal else "external",
+            "chain": settlement["chain"],
+            "tx_hash": settlement["tx_hash"],
         }),
         retention_expires_at=retention_expires,
     )
@@ -431,7 +454,8 @@ async def send_usdc(
         "fee": fee_cents / 100.0,
         "total_debited": total_needed / 100.0,
         "status": "completed",
-        "tx_hash": None,
+        "chain": settlement["chain"],
+        "tx_hash": settlement["tx_hash"],
         "created_at": transfer.created_at.isoformat() if transfer.created_at else None,
     }
 
@@ -473,6 +497,8 @@ async def get_transfer_history(user_id: str, db: Session, limit: int = 50) -> li
             "status": t.status,
             "memo": t.memo,
             "created_at": t.created_at.isoformat() if t.created_at else None,
+            "chain": t.chain,
+            "tx_hash": t.tx_hash,
         }
         for t in transfers
     ]

@@ -308,6 +308,7 @@ class CryptoTransfer(Base):
     fee_cents = Column(Integer, default=100, nullable=False)
     status = Column(String, default="completed", nullable=False, index=True)
     tx_hash = Column(String, nullable=True)
+    chain = Column(String, nullable=True)  # "polygon" | "base" -- which chain the real on-chain settlement used
     memo = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)

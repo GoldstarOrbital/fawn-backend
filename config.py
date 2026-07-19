@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     fawn_encryption_key: str = ""  # Encryption key for custodial wallet private keys
     uniswap_api_key: str = ""  # Uniswap v3 API key for trading quotes
     alchemy_api_key: str = ""  # Alchemy RPC for blockchain monitoring (Polygon)
+    gas_station_private_key: str = ""  # FAWN-controlled wallet that sponsors gas for custodial-wallet sends
     allowed_origins: str = (
         "https://goldstarorbital.com,"
         "https://www.goldstarorbital.com,"

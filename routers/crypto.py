@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, validator
 from database import get_db
 from dependencies import get_current_user_id
 from services import crypto_wallet
+from services import onchain_send
 from services.analytics import capture, EVENTS
 from rate_limiting import limiter, RATE_LIMITS
 from config import settings
@@ -149,6 +150,7 @@ class TransferResponse(BaseModel):
     fee: float
     total_debited: float
     status: str
+    chain: str | None = None
     tx_hash: str | None
     created_at: str | None
 
@@ -162,7 +164,7 @@ class TransferHistoryItem(BaseModel):
     status: str
     memo: str | None
     created_at: str | None
-    # Populated only for type="receive" -- where the deposit actually came from.
+    # On-chain settlement details -- which chain, and the real tx hash.
     chain: str | None = None
     tx_hash: str | None = None
 
@@ -334,6 +336,12 @@ async def send_usdc(
         raise HTTPException(status_code=400, detail=str(e))
     except crypto_wallet.InsufficientBalance as e:
         raise HTTPException(status_code=402, detail=str(e))  # 402 = Payment Required
+    except onchain_send.CannotSignTransaction as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except onchain_send.NoChainHasSufficientBalance as e:
+        raise HTTPException(status_code=402, detail=str(e))
+    except onchain_send.OnchainSendFailed as e:
+        raise HTTPException(status_code=502, detail=f"On-chain settlement failed: {e}")
 
 
 @transfer_router.post("/send-unified", response_model=TransferResponse, status_code=201)
@@ -407,6 +415,12 @@ async def send_to_user_or_wallet(
         raise HTTPException(status_code=400, detail=str(e))
     except crypto_wallet.InsufficientBalance as e:
         raise HTTPException(status_code=402, detail=str(e))  # 402 = Payment Required
+    except onchain_send.CannotSignTransaction as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except onchain_send.NoChainHasSufficientBalance as e:
+        raise HTTPException(status_code=402, detail=str(e))
+    except onchain_send.OnchainSendFailed as e:
+        raise HTTPException(status_code=502, detail=f"On-chain settlement failed: {e}")
 
 
 @transfer_router.post("/send-to-bank", response_model=BankTransferResponse, status_code=201)
