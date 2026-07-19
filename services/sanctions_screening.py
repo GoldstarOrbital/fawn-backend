@@ -112,28 +112,39 @@ def is_sanctioned(address: str, db: Session) -> bool:
     ).first() is not None
 
 
-def check_recipient_not_sanctioned(sender_id: str, recipient_address: str, db: Session) -> None:
+async def check_recipient_not_sanctioned(sender_id: str, recipient_address: str, db: Session) -> None:
     """Raises RecipientSanctioned and writes a compliance audit log entry
-    if recipient_address is on the screening list. No-op (fails open) if
-    the list is empty -- see module docstring."""
-    if not is_sanctioned(recipient_address, db):
+    if recipient_address is flagged by either the self-built OFAC
+    screener (is_sanctioned, always active) or an optional supplementary
+    Watchman instance (services/watchman_screening.py -- a clean no-op
+    until WATCHMAN_URL is configured). No-op (fails open) if neither
+    check finds anything -- see this module's and watchman_screening's
+    docstrings for why."""
+    from services.watchman_screening import check_address_against_watchman
+
+    flagged_by_ofac = is_sanctioned(recipient_address, db)
+    flagged_by_watchman = await check_address_against_watchman(recipient_address)
+
+    if not flagged_by_ofac and not flagged_by_watchman:
         return
 
+    source = "ofac" if flagged_by_ofac else "watchman"
     retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
     db.add(UserAuditLog(
         user_id=sender_id,
         action="send_blocked_sanctioned_recipient",
         details=json.dumps({
             "recipient_address": recipient_address,
+            "source": source,
             "timestamp": datetime.utcnow().isoformat(),
         }),
         retention_expires_at=retention_expires,
     ))
     db.commit()
 
-    log.warning("sanctions.send_blocked", sender_id=sender_id, recipient_address=recipient_address)
+    log.warning("sanctions.send_blocked", sender_id=sender_id, recipient_address=recipient_address, source=source)
     raise RecipientSanctioned(
-        "This recipient address cannot be sent to -- it matches OFAC's sanctions list."
+        "This recipient address cannot be sent to -- it matches a sanctions list."
     )
 
 

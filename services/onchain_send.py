@@ -397,7 +397,7 @@ async def send_onchain_usdc(
     # OFAC screening -- a legal requirement, checked before the key is
     # ever touched. See services/sanctions_screening.py.
     from services.sanctions_screening import check_recipient_not_sanctioned
-    check_recipient_not_sanctioned(sender.id, recipient_address, db)
+    await check_recipient_not_sanctioned(sender.id, recipient_address, db)
 
     wallet_row = db.query(CryptoWallet).filter(
         CryptoWallet.wallet_address.ilike(sender.crypto_wallet_address)

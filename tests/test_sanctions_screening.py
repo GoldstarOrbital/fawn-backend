@@ -95,7 +95,8 @@ def test_is_sanctioned_true_and_false():
         db.close()
 
 
-def test_check_recipient_not_sanctioned_blocks_and_logs():
+@pytest.mark.asyncio
+async def test_check_recipient_not_sanctioned_blocks_and_logs():
     db = SessionLocal()
     try:
         sanctioned = _random_address()
@@ -104,7 +105,7 @@ def test_check_recipient_not_sanctioned_blocks_and_logs():
         user = _make_user(db)
 
         with pytest.raises(screening.RecipientSanctioned):
-            screening.check_recipient_not_sanctioned(user.id, sanctioned, db)
+            await screening.check_recipient_not_sanctioned(user.id, sanctioned, db)
 
         log = db.query(UserAuditLog).filter(
             UserAuditLog.user_id == user.id,
@@ -116,12 +117,13 @@ def test_check_recipient_not_sanctioned_blocks_and_logs():
         db.close()
 
 
-def test_check_recipient_not_sanctioned_allows_clean_address():
+@pytest.mark.asyncio
+async def test_check_recipient_not_sanctioned_allows_clean_address():
     db = SessionLocal()
     try:
         user = _make_user(db)
         # Should not raise.
-        screening.check_recipient_not_sanctioned(user.id, "0x" + "1" * 40, db)
+        await screening.check_recipient_not_sanctioned(user.id, "0x" + "1" * 40, db)
     finally:
         db.close()
 

@@ -14,6 +14,31 @@ import json
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+@router.get("/watchman-status")
+async def watchman_status(_: str = Depends(require_admin_key)):
+    """Debug/ops helper: is the optional supplementary Watchman screening
+    (services/watchman_screening.py) actually configured and reachable?
+    A silently-unconfigured or silently-unreachable supplementary check
+    is a lot less useful than an explicitly visible one -- same reasoning
+    as GET /admin/sanctions-status for the primary OFAC screener."""
+    from config import settings
+    from services.watchman_screening import check_address_against_watchman
+
+    if not settings.watchman_url:
+        return {"configured": False, "reachable": None, "watchman_url": None}
+
+    # A well-formed address that (overwhelmingly likely) has no real
+    # sanctions match -- this is a reachability probe, not a real
+    # screening check, so the result value itself doesn't matter.
+    probe_address = "0x" + "1" * 40
+    result = await check_address_against_watchman(probe_address)
+    return {
+        "configured": True,
+        "reachable": result is not None,
+        "watchman_url": settings.watchman_url,
+    }
+
+
 @router.get("/pending-transfers")
 async def pending_transfers(
     db: Session = Depends(get_db),

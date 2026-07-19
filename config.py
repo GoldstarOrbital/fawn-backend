@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     uniswap_api_key: str = ""  # Uniswap v3 API key for trading quotes
     alchemy_api_key: str = ""  # Alchemy RPC for blockchain monitoring (Polygon)
     gas_station_private_key: str = ""  # FAWN-controlled wallet that sponsors gas for custodial-wallet sends
+    watchman_url: str = ""  # optional self-hosted moov/watchman instance -- see services/watchman_screening.py
 
     # ---- Custody hardening ----
     # A compromised session, a bug, or a leaked key should never be able to
