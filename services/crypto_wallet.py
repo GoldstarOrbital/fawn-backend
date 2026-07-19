@@ -242,10 +242,21 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
     # Derive wallet address and private key from seed
     wallet_address, private_key_hex = _derive_wallet_from_seed(seed_phrase)
 
-    # Encrypt private key for storage (custodial only)
+    # Encrypt private key for storage (custodial only). Verify it round-trips
+    # BEFORE anything is persisted -- confirmed in production: an earlier
+    # version of this function created "fawn_custodial" wallets without ever
+    # persisting a usable key. The wallet looked fully set up (real on-chain
+    # address, wallet_initialized true) but nobody, not FAWN and not the
+    # user (custodial wallets never return a seed phrase), held anything
+    # that could sign for it. Real deposits sent there are permanently
+    # unrecoverable. Failing here, before any DB write, means a bad key
+    # produces a clean wallet-creation error instead of a wallet a user can
+    # deposit real money into that nobody can ever move back out.
     encrypted_key = None
     if wallet_type == "fawn_custodial":
         encrypted_key = _encrypt_private_key(private_key_hex)
+        if _decrypt_private_key(encrypted_key) != private_key_hex:
+            raise ValueError("Custodial key failed round-trip verification -- refusing to create an unsignable wallet.")
 
     # Create wallet record in database
     wallet = CryptoWallet(
