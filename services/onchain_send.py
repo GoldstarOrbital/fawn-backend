@@ -44,8 +44,10 @@ from sqlalchemy.orm import Session
 from eth_account import Account
 from eth_utils import to_checksum_address
 
+from sqlalchemy import func as sa_func
+
 from database import SessionLocal
-from models import User, CryptoWallet, UserAuditLog
+from models import User, CryptoWallet, UserAuditLog, CryptoTransfer, GasStationTopup
 from services import blockchain_monitor as bm
 from services.crypto_wallet import _decrypt_private_key
 from config import settings
@@ -105,6 +107,48 @@ class NoChainHasSufficientBalance(Exception):
 class OnchainSendFailed(Exception):
     """The transaction was built and signed but broadcasting failed."""
     pass
+
+
+class SendLimitExceeded(Exception):
+    """A hard custody safeguard, not a balance check -- a compromised
+    session, a bug, or a leaked key should never be able to move more than
+    this in one transaction or one day, independent of how much the
+    wallet actually holds."""
+    pass
+
+
+class GasStationLimitExceeded(Exception):
+    """The gas station wallet has hit its platform-wide daily top-up cap.
+    Protects it from a runaway loop draining its balance -- each
+    individual top-up is tiny, but unbounded repetition isn't."""
+    pass
+
+
+def _check_send_limits(sender: User, amount_cents: int, db: Session) -> None:
+    """Hard per-transaction and rolling-24h caps on custodial sends. These
+    exist independent of the sender's real balance -- a wallet legitimately
+    holding $10,000 still shouldn't be able to move all of it in a single
+    compromised-session transaction."""
+    if amount_cents > settings.max_send_cents_per_tx:
+        raise SendLimitExceeded(
+            f"${amount_cents/100:.2f} exceeds the ${settings.max_send_cents_per_tx/100:.2f} "
+            f"per-transaction limit."
+        )
+
+    since = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+    sent_last_24h = db.query(sa_func.coalesce(sa_func.sum(CryptoTransfer.amount_cents), 0)).filter(
+        CryptoTransfer.sender_id == sender.id,
+        CryptoTransfer.created_at >= since,
+        CryptoTransfer.status == "completed",
+    ).scalar()
+
+    if sent_last_24h + amount_cents > settings.max_send_cents_per_day:
+        raise SendLimitExceeded(
+            f"This send would bring your rolling 24h total to "
+            f"${(sent_last_24h + amount_cents)/100:.2f}, over the "
+            f"${settings.max_send_cents_per_day/100:.2f} daily limit. "
+            f"Already sent in the last 24h: ${sent_last_24h/100:.2f}."
+        )
 
 
 def _get_gas_station_account():
@@ -192,17 +236,32 @@ def _sign_native_transfer(chain: str, private_key: str, nonce: int, gas_price: i
     return signed.raw_transaction.hex() if hasattr(signed, "raw_transaction") else signed.rawTransaction.hex()
 
 
-async def _ensure_gas(chain: str, wallet_address: str) -> None:
+async def _ensure_gas(chain: str, wallet_address: str, db: Session) -> None:
     """Top up wallet_address's native-gas balance from the gas station
     wallet if it's below the minimum needed for a USDC transfer. Waits
     for the top-up to actually land (polls for a receipt) before
     returning, so the subsequent USDC-transfer nonce is correct and the
-    transfer doesn't race a still-pending top-up."""
+    transfer doesn't race a still-pending top-up.
+
+    Enforces a platform-wide daily cap on top-up COUNT before sending one
+    -- the gas station wallet has no other spend limit, so this is what
+    stands between a bug/abuse loop and it being drained."""
     import asyncio
 
     balance = await _get_native_balance(chain, wallet_address)
     if balance is not None and balance >= MIN_GAS_BALANCE_WEI[chain]:
         return
+
+    since = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+    topups_last_24h = db.query(sa_func.count(GasStationTopup.id)).filter(
+        GasStationTopup.created_at >= since,
+    ).scalar()
+    if topups_last_24h >= settings.max_gas_topups_per_day:
+        raise GasStationLimitExceeded(
+            f"Gas station has hit its daily top-up cap ({settings.max_gas_topups_per_day}/day). "
+            f"This protects the gas wallet from a runaway drain -- if this is legitimate volume, "
+            f"raise MAX_GAS_TOPUPS_PER_DAY."
+        )
 
     gas_account = _get_gas_station_account()
     nonce = await _get_nonce(chain, gas_account.address)
@@ -212,6 +271,14 @@ async def _ensure_gas(chain: str, wallet_address: str) -> None:
 
     raw_tx = _sign_native_transfer(chain, gas_account.key.hex(), nonce, gas_price, wallet_address, GAS_TOPUP_WEI[chain])
     tx_hash = await _broadcast(chain, raw_tx)
+
+    db.add(GasStationTopup(
+        chain=chain,
+        wallet_address=wallet_address,
+        amount_wei=str(GAS_TOPUP_WEI[chain]),
+        tx_hash=tx_hash,
+    ))
+    db.commit()
 
     # Wait for the top-up to confirm (bounded) before proceeding -- the
     # USDC transfer's own nonce/gas depend on this having actually landed.
@@ -256,13 +323,18 @@ async def send_onchain_usdc(
         {"chain": "polygon"|"base", "tx_hash": "0x...", "amount_cents": int}
 
     Raises:
-        CannotSignTransaction, NoChainHasSufficientBalance, OnchainSendFailed
+        CannotSignTransaction, SendLimitExceeded, NoChainHasSufficientBalance,
+        GasStationLimitExceeded, OnchainSendFailed
     """
     if sender.wallet_type != "fawn_custodial":
         raise CannotSignTransaction(
             f"FAWN cannot sign for a {sender.wallet_type or 'unknown'} wallet -- "
             f"only fawn_custodial wallets can be sent from server-side."
         )
+
+    # Hard custody limits, checked before anything touches the key or the
+    # network -- fail fast on an out-of-bounds request.
+    _check_send_limits(sender, amount_cents, db)
 
     wallet_row = db.query(CryptoWallet).filter(
         CryptoWallet.wallet_address.ilike(sender.crypto_wallet_address)
@@ -277,6 +349,23 @@ async def send_onchain_usdc(
         private_key = _decrypt_private_key(wallet_row.encrypted_private_key)
     except Exception as e:
         raise CannotSignTransaction(f"Failed to decrypt signing key: {e}")
+
+    # Audit every key decryption as a security-relevant event, independent
+    # of whether the send itself succeeds -- who/when/which wallet a
+    # private key was decrypted for should always be reconstructable.
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+    db.add(UserAuditLog(
+        user_id=sender.id,
+        action="private_key_decrypted",
+        details=json.dumps({
+            "wallet_address": sender.crypto_wallet_address,
+            "purpose": "send_onchain_usdc",
+            "amount_cents": amount_cents,
+            "timestamp": datetime.utcnow().isoformat(),
+        }),
+        retention_expires_at=retention_expires,
+    ))
+    db.commit()
 
     try:
         # Find a single chain whose real on-chain native-USDC balance
@@ -302,7 +391,7 @@ async def send_onchain_usdc(
                 per_chain_balances,
             )
 
-        await _ensure_gas(chosen_chain, sender.crypto_wallet_address)
+        await _ensure_gas(chosen_chain, sender.crypto_wallet_address, db)
 
         contract = bm.CHAINS[chosen_chain]["contracts"]["usdc_native"]
         nonce = await _get_nonce(chosen_chain, sender.crypto_wallet_address)

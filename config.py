@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     uniswap_api_key: str = ""  # Uniswap v3 API key for trading quotes
     alchemy_api_key: str = ""  # Alchemy RPC for blockchain monitoring (Polygon)
     gas_station_private_key: str = ""  # FAWN-controlled wallet that sponsors gas for custodial-wallet sends
+
+    # ---- Custody hardening ----
+    # A compromised session, a bug, or a leaked key should never be able to
+    # drain a wallet in one shot -- hard caps contain the blast radius
+    # regardless of what went wrong upstream. Defaults are generous for a
+    # student P2P app but bound worst-case loss; override via env vars if
+    # these ever need to flex for a specific rollout.
+    max_send_cents_per_tx: int = 200_000  # $2,000 per single send
+    max_send_cents_per_day: int = 500_000  # $5,000 per user per rolling 24h
+    max_gas_topups_per_day: int = 200  # platform-wide, protects the gas station wallet from a runaway loop
     allowed_origins: str = (
         "https://goldstarorbital.com,"
         "https://www.goldstarorbital.com,"

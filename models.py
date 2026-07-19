@@ -391,6 +391,26 @@ class ChainScanCheckpoint(Base):
     )
 
 
+class GasStationTopup(Base):
+    """Records every native-gas top-up FAWN's gas station wallet sends to a
+    custodial wallet before a USDC transfer (services/onchain_send.py).
+
+    Exists to enforce a platform-wide daily cap on top-ups -- the gas
+    station wallet has no other spend limit of its own, so without a cap a
+    bug or abuse loop could drain it via unbounded top-ups. Also gives an
+    audit trail of the gas station wallet's own outflows, separate from
+    user-facing CryptoTransfer records.
+    """
+    __tablename__ = "gas_station_topups"
+
+    id = Column(String, primary_key=True, default=new_id)
+    chain = Column(String, nullable=False, index=True)
+    wallet_address = Column(String, nullable=False, index=True)
+    amount_wei = Column(String, nullable=False)  # string: wei values can exceed 64-bit int range
+    tx_hash = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class FeeCollection(Base):
     """Daily/periodic aggregation of platform fees collected.
 

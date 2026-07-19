@@ -226,3 +226,138 @@ async def test_broadcast_failure_raises_onchain_send_failed(monkeypatch):
             await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 500, db)
     finally:
         db.close()
+
+
+# ── Custody hardening: hard limits independent of wallet balance ──
+
+@pytest.mark.asyncio
+async def test_single_send_over_per_tx_limit_is_rejected(monkeypatch):
+    from config import settings
+    monkeypatch.setattr(settings, "max_send_cents_per_tx", 1000)  # $10 cap for this test
+
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=100_000))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        with pytest.raises(onchain_send.SendLimitExceeded):
+            await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 1001, db)  # $10.01, over the $10 cap
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_per_tx_limit_check_happens_before_key_decryption(monkeypatch):
+    # A rejected send must never touch the private key -- verifies the
+    # limit check is the FIRST real check, not just that it eventually
+    # raises. Simulates a wallet with no stored key at all; if the limit
+    # check ran after key lookup, this would raise CannotSignTransaction
+    # instead of SendLimitExceeded.
+    from config import settings
+    monkeypatch.setattr(settings, "max_send_cents_per_tx", 1000)
+
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db, with_key=False)
+        with pytest.raises(onchain_send.SendLimitExceeded):
+            await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 1001, db)
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_cumulative_daily_sends_over_limit_are_rejected(monkeypatch):
+    from config import settings
+    from models import CryptoTransfer
+    monkeypatch.setattr(settings, "max_send_cents_per_day", 1500)  # $15/day cap for this test
+
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        # Simulate $10 already sent in the last 24h.
+        db.add(CryptoTransfer(sender_id=user.id, recipient_address="0x" + "9" * 40, amount_cents=1000, status="completed"))
+        db.commit()
+
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=100_000))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        # $10 already sent + $6 more would be $16, over the $15 daily cap.
+        with pytest.raises(onchain_send.SendLimitExceeded):
+            await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 600, db)
+
+        # But $4 more (bringing the total to exactly $14) should be fine.
+        result = await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 400, db)
+        assert result["tx_hash"].startswith("0x")
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_completed_sends_do_not_count_toward_daily_limit(monkeypatch):
+    # Only "completed" transfers should count against the rolling total --
+    # a failed/pending one didn't actually move money.
+    from config import settings
+    from models import CryptoTransfer
+    monkeypatch.setattr(settings, "max_send_cents_per_day", 1000)  # $10/day cap
+
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        db.add(CryptoTransfer(sender_id=user.id, recipient_address="0x" + "9" * 40, amount_cents=900, status="failed"))
+        db.commit()
+
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=100_000))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        # Should succeed -- the $9 "failed" transfer shouldn't count.
+        result = await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 900, db)
+        assert result["tx_hash"].startswith("0x")
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_send_creates_key_decryption_audit_log(monkeypatch):
+    from models import UserAuditLog
+
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=100_000))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 500, db)
+
+        log = db.query(UserAuditLog).filter(
+            UserAuditLog.user_id == user.id,
+            UserAuditLog.action == "private_key_decrypted",
+        ).first()
+        assert log is not None
+        assert "send_onchain_usdc" in log.details
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_gas_station_daily_topup_cap_is_enforced(monkeypatch):
+    from config import settings
+    from models import GasStationTopup
+    monkeypatch.setattr(settings, "max_gas_topups_per_day", 2)
+
+    db = SessionLocal()
+    try:
+        # Pre-seed 2 top-ups already "sent" today -- the cap should already be hit.
+        for _ in range(2):
+            db.add(GasStationTopup(chain="polygon", wallet_address="0x" + "2" * 40, amount_wei="1", tx_hash="0x" + uuid.uuid4().hex))
+        db.commit()
+
+        user, _ = _make_custodial_user(db)
+        # Low native balance forces a top-up attempt.
+        _patch_chain(monkeypatch, "polygon", _FakeChainClient(native_usdc_cents=100_000, native_balance_wei=1))
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        with pytest.raises(onchain_send.GasStationLimitExceeded):
+            await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 500, db)
+    finally:
+        db.close()

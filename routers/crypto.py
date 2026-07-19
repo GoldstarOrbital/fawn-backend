@@ -338,8 +338,12 @@ async def send_usdc(
         raise HTTPException(status_code=402, detail=str(e))  # 402 = Payment Required
     except onchain_send.CannotSignTransaction as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except onchain_send.SendLimitExceeded as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except onchain_send.NoChainHasSufficientBalance as e:
         raise HTTPException(status_code=402, detail=str(e))
+    except onchain_send.GasStationLimitExceeded as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except onchain_send.OnchainSendFailed as e:
         raise HTTPException(status_code=502, detail=f"On-chain settlement failed: {e}")
 
@@ -417,8 +421,12 @@ async def send_to_user_or_wallet(
         raise HTTPException(status_code=402, detail=str(e))  # 402 = Payment Required
     except onchain_send.CannotSignTransaction as e:
         raise HTTPException(status_code=422, detail=str(e))
+    except onchain_send.SendLimitExceeded as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except onchain_send.NoChainHasSufficientBalance as e:
         raise HTTPException(status_code=402, detail=str(e))
+    except onchain_send.GasStationLimitExceeded as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except onchain_send.OnchainSendFailed as e:
         raise HTTPException(status_code=502, detail=f"On-chain settlement failed: {e}")
 
