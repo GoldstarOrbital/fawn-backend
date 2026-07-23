@@ -63,9 +63,9 @@ def _clean(text: str) -> str:
     text = re.sub(r'&quot;', '"', text)
     text = re.sub(r'&#\d+;', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
-    # Truncate to ~300 chars at a sentence boundary
-    if len(text) > 320:
-        cut = text[:320].rfind('. ')
+    # Keep a readable source excerpt inline while retaining a clear excerpt boundary.
+    if len(text) > 900:
+        cut = text[:900].rfind('. ')
         text = text[:cut + 1] if cut > 100 else text[:320] + '…'
     return text
 
