@@ -74,6 +74,22 @@ class UpdateMeRequest(BaseModel):
     school: Optional[str] = None
     location: Optional[str] = None
     military_status: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+    @field_validator("avatar_url")
+    @classmethod
+    def validate_avatar_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        if len(v) > 700_000:
+            raise ValueError("Profile picture is too large")
+        if v.startswith("data:image/"):
+            if not re.match(r"^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$", v):
+                raise ValueError("Profile picture must be a PNG, JPEG, or WebP image")
+            return v
+        if re.match(r"^https://[^\s]+$", v):
+            return v
+        raise ValueError("Profile picture must use an https URL")
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -85,6 +101,8 @@ class UserResponse(BaseModel):
     id: str
     email: str
     full_name: str
+    username: str
+    avatar_url: Optional[str] = None
     is_student: bool
     school: Optional[str] = None
     location: Optional[str] = None
@@ -99,6 +117,8 @@ class UserResponse(BaseModel):
             id=user.id,
             email=user.email,
             full_name=user.full_name,
+            username=user.username or "",
+            avatar_url=getattr(user, "avatar_url", None),
             is_student=user.is_student,
             school=getattr(user, "school", None),
             location=getattr(user, "location", None),

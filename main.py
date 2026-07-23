@@ -80,6 +80,7 @@ def _init_db_schema():
         _patch("users", "referral_code", "referral_code VARCHAR")
         _patch("users", "referred_by", "referred_by VARCHAR")
         _patch("users", "username", "username VARCHAR UNIQUE")
+        _patch("users", "avatar_url", "avatar_url TEXT")
         _patch("users", "referral_count", "referral_count INTEGER DEFAULT 0 NOT NULL")
         _patch("users", "phone", "phone VARCHAR")
         _patch("users", "is_student", "is_student BOOLEAN DEFAULT FALSE")
@@ -274,6 +275,21 @@ app = FastAPI(
     description="Student-focused banking platform. Send money instantly to anyone - FAWN users or traditional bank accounts. No monthly fees.",
     version="0.2.0",
 )
+
+
+@app.on_event("startup")
+async def _ensure_user_profiles():
+    """Ensure every account has a username and a payment handle."""
+    from services.username_service import ensure_all_user_profiles
+    db = SessionLocal()
+    try:
+        result = ensure_all_user_profiles(db)
+        print(f"[profiles] usernames/handles ready: {result}")
+    except Exception as e:
+        db.rollback()
+        print(f"[profiles] backfill failed (continuing): {e}")
+    finally:
+        db.close()
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

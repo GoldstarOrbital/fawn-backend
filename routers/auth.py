@@ -24,6 +24,7 @@ from schemas import (
 from config import settings
 from dependencies import get_current_user
 from services.crypto_wallet import create_wallet, WalletNotInitialized
+from services.username_service import assign_username_to_user
 from rate_limiting import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -109,6 +110,8 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     db.flush()
 
     try:
+        if not assign_username_to_user(db, user):
+            raise RuntimeError("Unable to assign username")
         db.commit()
         db.refresh(user)
     except Exception as e:
@@ -153,6 +156,8 @@ def update_me(
         current_user.location = req.location
     if req.military_status is not None:
         current_user.military_status = req.military_status
+    if "avatar_url" in req.model_fields_set:
+        current_user.avatar_url = req.avatar_url
     db.commit()
     db.refresh(current_user)
     return UserResponse.from_orm_user(current_user)

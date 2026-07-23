@@ -398,11 +398,14 @@ async def send_to_user_or_wallet(
         # P2P transfer to FAWN user by username
         handle = recipient[1:].lower()  # remove @ and lowercase
         from models import Handle, User as UserModel
-        handle_row = db.query(Handle).filter(Handle.handle == handle).first()
-        if not handle_row:
+        recipient_user = db.query(UserModel).filter(
+            UserModel.username.ilike(handle)
+        ).first()
+        if not recipient_user:
+            handle_row = db.query(Handle).filter(Handle.handle == handle).first()
+            recipient_user = db.query(UserModel).filter(UserModel.id == handle_row.user_id).first() if handle_row else None
+        if not recipient_user:
             raise HTTPException(status_code=404, detail=f"No FAWN user found with handle @{handle}.")
-
-        recipient_user = db.query(UserModel).filter(UserModel.id == handle_row.user_id).first()
         if not recipient_user or not recipient_user.crypto_wallet_address:
             raise HTTPException(status_code=404, detail=f"User @{handle} doesn't have a wallet initialized.")
 

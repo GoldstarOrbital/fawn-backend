@@ -8,7 +8,7 @@ Handles:
 """
 import re
 from sqlalchemy.orm import Session
-from models import User
+from models import User, Handle
 from typing import Optional
 
 # Username rules
@@ -104,6 +104,7 @@ def assign_username_to_user(db: Session, user: User, desired_username: Optional[
         if is_valid_username(desired_lower):
             if not db.query(User).filter(User.username.ilike(desired_lower)).first():
                 user.username = desired_lower
+                _sync_handle(db, user, desired_lower)
                 db.commit()
                 return True
 
@@ -111,6 +112,7 @@ def assign_username_to_user(db: Session, user: User, desired_username: Optional[
     generated = generate_username(db, user.full_name)
     if generated:
         user.username = generated
+        _sync_handle(db, user, generated)
         db.commit()
         return True
 
@@ -139,5 +141,43 @@ def update_username(db: Session, user: User, new_username: str) -> tuple[bool, s
         return False, "Username already taken"
 
     user.username = new_username_clean
+    try:
+        _sync_handle(db, user, new_username_clean)
+    except ValueError:
+        db.rollback()
+        return False, "Username already taken"
     db.commit()
     return True, "Username updated"
+
+
+def _sync_handle(db: Session, user: User, username: str) -> None:
+    """Keep the legacy payment handle table aligned with User.username."""
+    conflict = db.query(Handle).filter(
+        Handle.handle == username,
+        Handle.user_id != user.id,
+    ).first()
+    if conflict:
+        raise ValueError("Username already taken")
+    handle = db.query(Handle).filter(Handle.user_id == user.id).first()
+    if handle:
+        handle.handle = username
+    else:
+        db.add(Handle(user_id=user.id, handle=username))
+
+
+def ensure_all_user_profiles(db: Session) -> dict[str, int]:
+    """Backfill usernames and payment handles for every existing account."""
+    assigned = 0
+    handles = 0
+    users = db.query(User).order_by(User.created_at, User.id).all()
+    for user in users:
+        if not user.username:
+            generated = generate_username(db, user.full_name or "user")
+            if not generated:
+                raise RuntimeError(f"Could not generate username for {user.id}")
+            user.username = generated
+            assigned += 1
+        _sync_handle(db, user, user.username.lower())
+        handles += 1
+    db.commit()
+    return {"usernames_assigned": assigned, "handles_synced": handles}

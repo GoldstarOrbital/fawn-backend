@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer, LargeBinary, ForeignKey, CheckConstraint, Index, text
+from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer, LargeBinary, ForeignKey, CheckConstraint, Index, Text, text
 from sqlalchemy.sql import func
 from database import Base
 import uuid
@@ -12,6 +12,7 @@ class User(Base):
     id = Column(String, primary_key=True, default=new_id)
     email = Column(String, unique=True, nullable=False, index=True)
     username = Column(String, unique=True, nullable=True, index=True)  # @username for profiles
+    avatar_url = Column(Text, nullable=True)  # validated image URL or resized data URL
     hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=False)
     phone = Column(String, nullable=True)

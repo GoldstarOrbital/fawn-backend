@@ -32,6 +32,38 @@ def test_register_then_login_with_different_email_case(client):
     assert "access_token" in login_resp.json()
 
 
+def test_register_assigns_username_and_profile_picture_can_change(client):
+    register_resp = client.post("/auth/register", json=_register_payload(email="profile@example.com"))
+    assert register_resp.status_code == 201
+    token = register_resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    me_resp = client.get("/auth/me", headers=headers)
+    assert me_resp.status_code == 200
+    assert me_resp.json()["username"] == "test_s"
+    assert me_resp.json()["avatar_url"] is None
+
+    avatar = "data:image/png;base64,AAAA"
+    patch_resp = client.patch("/auth/me", json={"avatar_url": avatar}, headers=headers)
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["avatar_url"] == avatar
+
+    remove_resp = client.patch("/auth/me", json={"avatar_url": None}, headers=headers)
+    assert remove_resp.status_code == 200
+    assert remove_resp.json()["avatar_url"] is None
+
+
+def test_profile_picture_rejects_untrusted_url(client):
+    register_resp = client.post("/auth/register", json=_register_payload(email="unsafe-avatar@example.com"))
+    token = register_resp.json()["access_token"]
+    response = client.patch(
+        "/auth/me",
+        json={"avatar_url": "javascript:alert(1)"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 422
+
+
 def test_register_with_short_password_fails_422(client):
     payload = _register_payload(email="shortpw@example.com", password="short1")
     resp = client.post("/auth/register", json=payload)
