@@ -15,16 +15,22 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # cheap + fast; digests are short
 
 # Feeds grouped by category so the UI can offer Markets / World / Crypto tabs.
-# "markets" is the default and matches the original feed list.
+# "markets" is the default. Every feed here was verified live on 2026-07-23;
+# Reuters (DNS gone), Investopedia (403), and Forbes (404) were removed as dead.
 RSS_FEEDS_BY_CATEGORY = {
     "markets": [
-        ("CNBC",          "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
-        ("CNBC Markets",  "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
-        ("MarketWatch",   "https://feeds.marketwatch.com/marketwatch/topstories/"),
-        ("Reuters",       "https://feeds.reuters.com/reuters/businessNews"),
-        ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC&region=US&lang=en-US"),
-        ("Investopedia",  "https://www.investopedia.com/feedbuilder/feed/getfeed/?feedName=rss_articles"),
-        ("Seeking Alpha", "https://seekingalpha.com/market_currents.xml"),
+        ("CNBC",             "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
+        ("CNBC Markets",     "https://www.cnbc.com/id/20910258/device/rss/rss.html"),
+        ("MarketWatch",      "https://feeds.marketwatch.com/marketwatch/topstories/"),
+        ("WSJ Markets",      "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain"),
+        ("WSJ Economy",      "https://feeds.content.dowjones.io/public/rss/socialeconomyfeed"),
+        ("Yahoo Finance",    "https://finance.yahoo.com/news/rssindex"),
+        ("Fortune",          "https://fortune.com/feed/"),
+        ("Nasdaq",           "https://www.nasdaq.com/feed/rssoutbound?category=Markets"),
+        ("Business Insider", "https://feeds.businessinsider.com/custom/all"),
+        ("Financial Times",  "https://www.ft.com/rss/home"),
+        ("The Economist",    "https://www.economist.com/finance-and-economics/rss.xml"),
+        ("Seeking Alpha",    "https://seekingalpha.com/market_currents.xml"),
     ],
     "world": [
         ("BBC World",     "https://feeds.bbci.co.uk/news/world/rss.xml"),
@@ -37,6 +43,7 @@ RSS_FEEDS_BY_CATEGORY = {
         ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=BTC-USD&region=US&lang=en-US"),
         ("CoinDesk",      "https://www.coindesk.com/arc/outboundfeeds/rss/"),
         ("Cointelegraph", "https://cointelegraph.com/rss"),
+        ("Decrypt",       "https://decrypt.co/feed"),
     ],
 }
 VALID_CATEGORIES = tuple(RSS_FEEDS_BY_CATEGORY.keys())
@@ -63,77 +70,145 @@ def _clean(text: str) -> str:
     return text
 
 
+# --- Feed cache ------------------------------------------------------------
+# The web UI polls /news/headlines every 1 second per open tab. Feeds are
+# fetched CONCURRENTLY and the merged, unfiltered per-category result is
+# cached in-process for _FEED_TTL_SECONDS; the 1s polls hit this cache, and
+# keyword filtering happens per-request on the cached list (cheap). A stale
+# cache is served while a refresh is in flight so polls never block.
+_FEED_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_FEED_TTL_SECONDS = 45
+_FEED_REFRESHING: set[str] = set()
+_PER_SOURCE_CAP = 12  # max stories taken from any single source pre-merge
+_FEED_UA = "Mozilla/5.0 (compatible; FAWN-news/1.0; +https://goldstarorbital.github.io/fawn-landing)"
+
+
+def _parse_feed_items(source_name: str, xml_text: str) -> list[dict]:
+    """Parse one RSS feed's items into article dicts (best-effort)."""
+    out = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return out
+    for item in root.iter("item"):
+        title_el = item.find("title")
+        desc_el = item.find("description")
+        date_el = item.find("pubDate")
+
+        title = title_el.text.strip() if title_el is not None and title_el.text else ""
+        if not title:
+            continue
+
+        raw_desc = (desc_el.text or "") if desc_el is not None else ""
+        summary = _clean(raw_desc)
+        if not summary or summary.lower().strip() == title.lower().strip() or len(summary) < 30:
+            summary = "Tap to read the key takeaway from this story."
+
+        pub_date = (date_el.text or "").strip() if date_el is not None else ""
+        ts = 0.0
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(pub_date)
+            ts = dt.timestamp()
+            hour12 = dt.hour % 12 or 12
+            ampm = "AM" if dt.hour < 12 else "PM"
+            pub_date = f"{dt.month}/{dt.day} · {hour12}:{dt.minute:02d} {ampm}"
+        except Exception:
+            pub_date = pub_date[:16] if pub_date else ""
+
+        out.append({
+            "title": title,
+            "summary": summary,
+            "source": source_name,
+            "pub_date": pub_date,
+            "_ts": ts,
+            "_raw_desc": raw_desc.lower(),
+        })
+        if len(out) >= _PER_SOURCE_CAP:
+            break
+    return out
+
+
+async def _fetch_all_feeds(feeds: list[tuple[str, str]]) -> list[dict]:
+    """Fetch every feed concurrently and interleave results round-robin
+    across sources (newest-first within each source), so no single outlet
+    can monopolize the list the way the old sequential fetch-until-limit
+    loop let CNBC do."""
+    import asyncio
+
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+        async def one(source_name: str, url: str) -> list[dict]:
+            try:
+                resp = await client.get(url, headers={"User-Agent": _FEED_UA})
+                if resp.status_code != 200:
+                    return []
+                return _parse_feed_items(source_name, resp.text)
+            except Exception:
+                return []
+
+        per_source = await asyncio.gather(*(one(n, u) for n, u in feeds))
+
+    for items in per_source:
+        items.sort(key=lambda a: a["_ts"], reverse=True)
+
+    # Round-robin interleave: 1st story from each source, then 2nd, ...
+    merged, seen = [], set()
+    for rank in range(_PER_SOURCE_CAP):
+        for items in per_source:
+            if rank < len(items):
+                a = items[rank]
+                key = a["title"].lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(a)
+    return merged
+
+
+async def _get_cached_feed(category_key: str, feeds: list[tuple[str, str]]) -> list[dict]:
+    now = time.time()
+    cached = _FEED_CACHE.get(category_key)
+    if cached and cached[0] > now:
+        return cached[1]
+    # Serve stale (if any) while another request is already refreshing.
+    if category_key in _FEED_REFRESHING and cached:
+        return cached[1]
+    _FEED_REFRESHING.add(category_key)
+    try:
+        fresh = await _fetch_all_feeds(feeds)
+        if fresh or not cached:
+            _FEED_CACHE[category_key] = (now + _FEED_TTL_SECONDS, fresh)
+            return fresh
+        # All feeds failed this round — keep serving the stale copy briefly.
+        _FEED_CACHE[category_key] = (now + 15, cached[1])
+        return cached[1]
+    finally:
+        _FEED_REFRESHING.discard(category_key)
+
+
 async def fetch_headlines(keywords: list[str] | None = None, limit: int = 30, category: str | None = None) -> list[dict]:
     """
-    Fetch articles with title + summary passage from major RSS feeds.
-    Filters by keywords if provided; category picks a feed group
-    (markets/world/crypto), defaulting to the original mixed list.
+    Articles with title + summary from a source-diverse blend of RSS feeds.
+    Feeds are fetched concurrently and cached server-side for ~45s; keyword
+    filtering runs per request against the cached list, so the UI's 1-second
+    refresh stays fast without hammering the outlets.
     Returns list of {title, summary, source, pub_date} dicts — no external links.
     """
     kw_lower = [k.lower() for k in keywords] if keywords else []
     feeds = RSS_FEEDS_BY_CATEGORY.get(category, RSS_FEEDS) if category else RSS_FEEDS
+    category_key = category or "_default"
+
+    merged = await _get_cached_feed(category_key, feeds)
+
     results = []
-    seen = set()
-
-    async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-        for source_name, feed_url in feeds:
-            if len(results) >= limit:
-                break
-            try:
-                resp = await client.get(feed_url, headers={"User-Agent": "FAWN-NewsReader/1.0"})
-                if resp.status_code != 200:
-                    continue
-
-                # Parse RSS — handle both standard RSS and Atom
-                root = ET.fromstring(resp.text)
-                ns = {"atom": "http://www.w3.org/2005/Atom",
-                      "media": "http://search.yahoo.com/mrss/"}
-
-                for item in root.iter("item"):
-                    title_el   = item.find("title")
-                    desc_el    = item.find("description")
-                    date_el    = item.find("pubDate")
-
-                    title = title_el.text.strip() if title_el is not None and title_el.text else ""
-                    if not title or title in seen:
-                        continue
-
-                    # Keyword filter
-                    if kw_lower and not any(kw in title.lower() for kw in kw_lower):
-                        # Also check description
-                        raw_desc = (desc_el.text or "") if desc_el is not None else ""
-                        if not any(kw in raw_desc.lower() for kw in kw_lower):
-                            continue
-
-                    summary = _clean((desc_el.text or "") if desc_el is not None else "")
-                    # If summary is just a repeat of the title or too short, leave a note
-                    if not summary or summary.lower().strip() == title.lower().strip() or len(summary) < 30:
-                        summary = "Tap to read the key takeaway from this story."
-
-                    pub_date = (date_el.text or "").strip() if date_el is not None else ""
-                    # Shorten date to just "Jun 18, 9:42 AM" style
-                    try:
-                        from email.utils import parsedate_to_datetime
-                        dt = parsedate_to_datetime(pub_date)
-                        hour12 = dt.hour % 12 or 12
-                        ampm = "AM" if dt.hour < 12 else "PM"
-                        pub_date = f"{dt.month}/{dt.day} · {hour12}:{dt.minute:02d} {ampm}"
-                    except Exception:
-                        pub_date = pub_date[:16] if pub_date else ""
-
-                    seen.add(title)
-                    results.append({
-                        "title":    title,
-                        "summary":  summary,
-                        "source":   source_name,
-                        "pub_date": pub_date,
-                    })
-                    if len(results) >= limit:
-                        break
-
-            except Exception:
+    for a in merged:
+        if kw_lower:
+            hay_title = a["title"].lower()
+            if not any(kw in hay_title for kw in kw_lower) and not any(kw in a["_raw_desc"] for kw in kw_lower):
                 continue
-
+        results.append({k: v for k, v in a.items() if not k.startswith("_")})
+        if len(results) >= limit:
+            break
     return results
 
 

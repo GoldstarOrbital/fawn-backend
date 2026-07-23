@@ -325,7 +325,7 @@ def get_stats_overview(
 
     registered_users_count: int = db.query(func.count(User.id)).scalar() or 0
 
-    # "Active account" = self-custodial USDC wallet created.
+    # "Active account" = a USDC wallet created.
     users_with_active_account_count: int = (
         db.query(func.count(User.id))
         .filter(User.wallet_initialized.is_(True))

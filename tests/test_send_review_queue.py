@@ -220,6 +220,40 @@ async def test_admin_approve_executes_the_real_send(monkeypatch):
         db2.close()
 
 
+@pytest.mark.asyncio
+async def test_admin_approve_accrues_pending_fee_for_treasury_sweep(monkeypatch):
+    # An admin-approved held transfer settles on-chain exactly like a
+    # normal send (see test_admin_approve_executes_the_real_send above),
+    # but only ever moves `amount` on-chain -- the fee has to be tracked
+    # the same way services/crypto_wallet.py::send_usdc tracks it on the
+    # normal path, or fees from every admin-approved send would silently
+    # never reach collect_fees()'s sweep. This was previously untested --
+    # deleting the accrual line in routers/admin_credit.py wouldn't have
+    # broken anything.
+    monkeypatch.setattr(settings, "new_recipient_review_threshold_cents", 50_000)
+    _patch_chains(monkeypatch)
+
+    db = SessionLocal()
+    try:
+        user = _make_custodial_user(db)
+        wallet_row = db.query(CryptoWallet).filter(CryptoWallet.user_id == user.id).first()
+        assert wallet_row.pending_fee_cents == 0
+        result = await send_usdc(user.id, "0x" + "8" * 40, 60_000, db, is_internal=False)
+        transfer_id = result["transfer_id"]
+    finally:
+        db.close()
+
+    resp = _admin_post("/admin/approve-transfer", {"transfer_id": transfer_id})
+    assert resp.status_code == 200, resp.text
+
+    db2 = SessionLocal()
+    try:
+        wallet_row = db2.query(CryptoWallet).filter(CryptoWallet.user_id == user.id).first()
+        assert wallet_row.pending_fee_cents == 50  # the $0.50 external fee, now owed to treasury
+    finally:
+        db2.close()
+
+
 def test_admin_reject_leaves_ledger_untouched():
     db = SessionLocal()
     try:

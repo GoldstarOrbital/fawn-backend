@@ -36,7 +36,11 @@ def _validate_eth_address(addr: str) -> bool:
 
 
 class CreateWalletRequest(BaseModel):
-    wallet_type: str = Field(..., pattern="^(non_custodial|fawn_custodial)$")
+    # non_custodial is still an accepted value here (not narrowed to a
+    # single-value pattern) so a request sends a clear, product-specific
+    # 400 explaining why instead of a generic Pydantic validation error --
+    # see the check in create_wallet() below.
+    wallet_type: str = Field(default="fawn_custodial", pattern="^(non_custodial|fawn_custodial)$")
 
 
 class CreateWalletResponse(BaseModel):
@@ -185,12 +189,25 @@ async def create_wallet(
     Create a new stablecoin wallet for the logged-in user.
 
     SECURITY: Only one wallet per user. Idempotent.
-    - non_custodial: User manages private key (seed phrase returned — must save, SHOWN ONCE ONLY)
-    - fawn_custodial: FAWN holds encrypted key (user accesses via PIN — MVP)
+    - fawn_custodial: FAWN holds encrypted key (user accesses via PIN — MVP). The only
+      wallet type new accounts can create — see the non_custodial check below.
+    - non_custodial: no longer offered for new wallets. Existing non_custodial wallets
+      from before this restriction keep working for balance/history, but were already
+      unable to send (server-side signing requires FAWN to hold the key) — this only
+      stops new ones from being created into that same dead end.
 
     Returns wallet address and (for non-custodial only) the seed phrase.
     CRITICAL: Seed phrase is shown ONCE and cannot be recovered if lost.
     """
+    if req.wallet_type == "non_custodial":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Self-custody (non_custodial) wallets are no longer offered for new accounts. "
+                "FAWN wallets are custodial by default -- FAWN needs to hold the signing key "
+                "for instant sends to actually work."
+            ),
+        )
     try:
         result = await crypto_wallet.create_wallet(user_id, db, wallet_type=req.wallet_type)
         capture(EVENTS["WALLET_CREATED"], user_id, {"wallet_type": req.wallet_type})

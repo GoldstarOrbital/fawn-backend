@@ -51,8 +51,12 @@ async def test_custodial_wallet_gets_a_decryptable_key():
         ).first()
         assert row is not None
         assert row.encrypted_private_key is not None
+        # New wallets use envelope encryption (key_version "v2" + a wrapped
+        # per-wallet DEK) -- see services/crypto_wallet.py's module docstring.
+        assert row.key_version == "v2"
+        assert row.wrapped_dek is not None
         # Must actually decrypt to a real private key, not just be non-null.
-        decrypted = crypto_wallet._decrypt_private_key(row.encrypted_private_key)
+        decrypted = crypto_wallet._decrypt_private_key(row.encrypted_private_key, key_version=row.key_version, wrapped_dek=row.wrapped_dek)
         hex_part = decrypted[2:] if decrypted.startswith("0x") else decrypted
         assert len(hex_part) == 64
         assert all(c in "0123456789abcdefABCDEF" for c in hex_part)

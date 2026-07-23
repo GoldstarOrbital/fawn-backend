@@ -48,8 +48,7 @@ def test_duplicate_email_registration_fails_400(client):
 
 
 def test_register_collects_no_sensitive_kyc_fields(client):
-    """FAWN is self-custodial/crypto-native — registration never asks for
-    or stores SSN, date of birth, or address."""
+    """Registration never asks for or stores SSN, date of birth, or address."""
     payload = _register_payload(email="nokyc@example.com")
 
     resp = client.post("/auth/register", json=payload)

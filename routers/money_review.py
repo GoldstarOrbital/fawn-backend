@@ -34,8 +34,8 @@ DISCLAIMER = (
 class MoneyReviewRequest(BaseModel):
     monthly_income_dollars: Optional[float] = Field(default=None, ge=0, le=1_000_000)
     goals: Optional[str] = Field(default=None, max_length=500)
-    # FAWN doesn't have linked bank transaction history yet (self-custodial
-    # crypto wallet), so the paste-your-data mode is the primary path.
+    # FAWN doesn't have linked bank transaction history yet, so the
+    # paste-your-data mode is the primary path.
     pasted_data: Optional[str] = Field(default=None, max_length=4000)
 
 

@@ -1,7 +1,7 @@
 """Tests for /ai/money-review — the 10-prompts-in-one-button feature.
 
-FAWN is self-custodial/crypto-native with no linked bank transaction
-history, so this endpoint only supports the pasted-data mode. All
+FAWN has no linked bank transaction history, so this endpoint only supports
+the pasted-data mode. All
 Anthropic calls are mocked.
 """
 import uuid

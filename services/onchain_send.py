@@ -30,7 +30,7 @@ Scope (v1):
   attempting to split a send across two separate transactions.
 - FAWN sponsors gas: USDC transfers need the sender's wallet to hold a
   small amount of the chain's native gas token (MATIC/POL on Polygon,
-  ETH on Base), which a self-custodial user's wallet has no reason to
+  ETH on Base), which a custodial app must manage on the user's behalf
   hold. A FAWN-controlled "gas station" wallet (GAS_STATION_PRIVATE_KEY)
   tops up the sender's wallet with just enough native token before the
   USDC transfer, when needed.
@@ -283,6 +283,29 @@ def _sign_native_transfer(chain: str, private_key: str, nonce: int, gas_price: i
     return signed.raw_transaction.hex() if hasattr(signed, "raw_transaction") else signed.rawTransaction.hex()
 
 
+async def _wait_for_confirmation(chain: str, tx_hash: str, max_polls: int = 30, poll_interval_seconds: float = 2) -> dict:
+    """Poll eth_getTransactionReceipt until a receipt appears (bounded).
+    Returns the receipt dict as soon as one exists -- callers that care
+    whether the transaction actually SUCCEEDED (as opposed to merely
+    landing) must check receipt["status"] themselves (post-Byzantium:
+    "0x1" = success, "0x0" = reverted). A native value transfer to a
+    plain address (no contract code) can't meaningfully revert, which is
+    why _ensure_gas's gas top-up doesn't check status -- but an ERC-20
+    transfer() call can (paused/blacklisted contract, a race that leaves
+    insufficient balance despite the pre-broadcast check, etc.), which is
+    exactly why _settle_onchain_transfer does check it.
+
+    Raises OnchainSendFailed if no receipt appears within max_polls."""
+    import asyncio
+
+    for _ in range(max_polls):
+        receipt = await bm._rpc_clients[chain].call("eth_getTransactionReceipt", [tx_hash])
+        if receipt is not None:
+            return receipt
+        await asyncio.sleep(poll_interval_seconds)
+    raise OnchainSendFailed(f"Transaction {tx_hash} on {chain} did not confirm in time.")
+
+
 async def _ensure_gas(chain: str, wallet_address: str, db: Session) -> None:
     """Top up wallet_address's native-gas balance from the gas station
     wallet if it's below the minimum needed for a USDC transfer. Waits
@@ -293,8 +316,6 @@ async def _ensure_gas(chain: str, wallet_address: str, db: Session) -> None:
     Enforces a platform-wide daily cap on top-up COUNT before sending one
     -- the gas station wallet has no other spend limit, so this is what
     stands between a bug/abuse loop and it being drained."""
-    import asyncio
-
     balance = await _get_native_balance(chain, wallet_address)
     if balance is not None and balance >= MIN_GAS_BALANCE_WEI[chain]:
         return
@@ -327,14 +348,11 @@ async def _ensure_gas(chain: str, wallet_address: str, db: Session) -> None:
     ))
     db.commit()
 
-    # Wait for the top-up to confirm (bounded) before proceeding -- the
-    # USDC transfer's own nonce/gas depend on this having actually landed.
-    for _ in range(30):
-        receipt = await bm._rpc_clients[chain].call("eth_getTransactionReceipt", [tx_hash])
-        if receipt is not None:
-            return
-        await asyncio.sleep(2)
-    raise OnchainSendFailed(f"Gas top-up {tx_hash} on {chain} did not confirm in time.")
+    # Wait for the top-up to confirm before proceeding -- the USDC
+    # transfer's own nonce/gas depend on this having actually landed. Not
+    # status-checked: a plain native-value transfer to an address (no
+    # contract code) can't meaningfully revert.
+    await _wait_for_confirmation(chain, tx_hash)
 
 
 async def _get_native_usdc_balance(chain: str, wallet_address: str) -> Optional[int]:
@@ -353,6 +371,87 @@ async def _get_native_usdc_balance(chain: str, wallet_address: str) -> Optional[
         except Exception:
             return None
     return None
+
+
+async def _settle_onchain_transfer(from_address: str, private_key: str, to_address: str, amount_cents: int, db: Session) -> dict:
+    """
+    Core sign-and-broadcast step shared by send_onchain_usdc (user-
+    initiated sends, which layer hard limits/OFAC/review checks on top --
+    see module docstring) and sweep_wallet_fee (FAWN's own periodic fee
+    sweep to treasury, which has no such checks: the destination is
+    always FAWN's own treasury wallet, and the amount is bounded by what
+    FAWN's own ledger already recorded as owed, not by user input).
+
+    Picks a single chain whose real on-chain native-USDC balance covers
+    amount_cents (a ledger total spanning multiple chains can't be split
+    across two transactions in v1), tops up native gas if needed, signs,
+    broadcasts an ERC-20 transfer(to_address, amount_cents), and waits
+    for it to actually confirm on-chain with a successful (non-reverted)
+    receipt before returning.
+
+    This wait matters: every caller (send_usdc's ledger debit + "completed"
+    status, collect_fees' atomic fee claim) treats this function returning
+    normally as proof money actually moved. A broadcast-accepted tx hash is
+    not that proof by itself -- a transaction can be included in a block
+    and still revert (e.g. a race that leaves insufficient balance despite
+    the pre-broadcast check above, or a paused/blacklisted contract state).
+    Without this wait, a reverted transfer would still get recorded as
+    completed and, for fee sweeps, would zero pending_fee_cents for real
+    USDC that never actually left the wallet -- reopening the exact
+    "fee silently drifts" problem this whole fix exists to close, just via
+    a different mechanism.
+
+    Returns:
+        {"chain": "polygon"|"base", "tx_hash": "0x...", "amount_cents": int}
+
+    Raises:
+        NoChainHasSufficientBalance, GasStationLimitExceeded, OnchainSendFailed
+        (including on a confirmed-but-reverted transaction, or one that
+        never confirms within the poll window)
+    """
+    per_chain_balances = {}
+    chosen_chain = None
+    for chain in bm.CHAINS:
+        bal = await _get_native_usdc_balance(chain, from_address)
+        per_chain_balances[chain] = bal
+        if bal is not None and bal >= amount_cents and chosen_chain is None:
+            chosen_chain = chain
+
+    if chosen_chain is None:
+        readable = ", ".join(
+            f"{c}: ${(v or 0)/100:.2f}" if v is not None else f"{c}: unknown"
+            for c, v in per_chain_balances.items()
+        )
+        raise NoChainHasSufficientBalance(
+            f"No single chain has enough native USDC on {from_address} to cover ${amount_cents/100:.2f}. "
+            f"Per-chain balances -- {readable}.",
+            per_chain_balances,
+        )
+
+    await _ensure_gas(chosen_chain, from_address, db)
+
+    contract = bm.CHAINS[chosen_chain]["contracts"]["usdc_native"]
+    nonce = await _get_nonce(chosen_chain, from_address)
+    gas_price = await _get_gas_price(chosen_chain)
+    if nonce is None or gas_price is None:
+        raise OnchainSendFailed(f"Could not fetch nonce/gas price on {chosen_chain}.")
+
+    amount_raw = amount_cents * (10 ** 4)  # cents -> raw USDC units (6 decimals)
+    raw_tx = _sign_transfer(chosen_chain, private_key, nonce, gas_price, contract, to_address, amount_raw)
+    tx_hash = await _broadcast(chosen_chain, raw_tx)
+
+    # Broadcast-accepted is not the same as succeeded -- wait for a real
+    # receipt and check it didn't revert before telling callers this
+    # transfer is done. See the docstring above for why this matters.
+    receipt = await _wait_for_confirmation(chosen_chain, tx_hash)
+    if receipt.get("status") != "0x1":
+        raise OnchainSendFailed(
+            f"Transaction {tx_hash} on {chosen_chain} confirmed but reverted "
+            f"(receipt status: {receipt.get('status')!r}). No funds moved -- "
+            f"safe to retry with a fresh nonce."
+        )
+
+    return {"chain": chosen_chain, "tx_hash": tx_hash, "amount_cents": amount_cents}
 
 
 async def send_onchain_usdc(
@@ -409,7 +508,11 @@ async def send_onchain_usdc(
         )
 
     try:
-        private_key = _decrypt_private_key(wallet_row.encrypted_private_key)
+        private_key = _decrypt_private_key(
+            wallet_row.encrypted_private_key,
+            key_version=wallet_row.key_version,
+            wrapped_dek=wallet_row.wrapped_dek,
+        )
     except Exception as e:
         raise CannotSignTransaction(f"Failed to decrypt signing key: {e}")
 
@@ -431,46 +534,70 @@ async def send_onchain_usdc(
     db.commit()
 
     try:
-        # Find a single chain whose real on-chain native-USDC balance
-        # covers the full amount. A ledger total spanning multiple
-        # chains can't be split across two transactions in v1 (see
-        # module docstring).
-        per_chain_balances = {}
-        chosen_chain = None
-        for chain in bm.CHAINS:
-            bal = await _get_native_usdc_balance(chain, sender.crypto_wallet_address)
-            per_chain_balances[chain] = bal
-            if bal is not None and bal >= amount_cents and chosen_chain is None:
-                chosen_chain = chain
-
-        if chosen_chain is None:
-            readable = ", ".join(
-                f"{c}: ${(v or 0)/100:.2f}" if v is not None else f"{c}: unknown"
-                for c, v in per_chain_balances.items()
-            )
-            raise NoChainHasSufficientBalance(
-                f"No single chain has enough native USDC to cover ${amount_cents/100:.2f}. "
-                f"Per-chain balances -- {readable}.",
-                per_chain_balances,
-            )
-
-        await _ensure_gas(chosen_chain, sender.crypto_wallet_address, db)
-
-        contract = bm.CHAINS[chosen_chain]["contracts"]["usdc_native"]
-        nonce = await _get_nonce(chosen_chain, sender.crypto_wallet_address)
-        gas_price = await _get_gas_price(chosen_chain)
-        if nonce is None or gas_price is None:
-            raise OnchainSendFailed(f"Could not fetch nonce/gas price on {chosen_chain}.")
-
-        amount_raw = amount_cents * (10 ** 4)  # cents -> raw USDC units (6 decimals)
-        raw_tx = _sign_transfer(chosen_chain, private_key, nonce, gas_price, contract, recipient_address, amount_raw)
-        tx_hash = await _broadcast(chosen_chain, raw_tx)
-
-        return {"chain": chosen_chain, "tx_hash": tx_hash, "amount_cents": amount_cents}
+        return await _settle_onchain_transfer(sender.crypto_wallet_address, private_key, recipient_address, amount_cents, db)
     finally:
         # Best-effort: drop our only local reference so it isn't
         # retained longer than needed. Python can't guarantee secure
         # erasure, but this keeps the key out of any enclosing scope's
         # long-lived state and out of every code path above that returns
         # or raises.
+        private_key = None
+
+
+async def sweep_wallet_fee(wallet: CryptoWallet, treasury_address: str, amount_cents: int, db: Session) -> dict:
+    """
+    Sign and broadcast a real on-chain USDC transfer of amount_cents from
+    wallet (a fawn_custodial wallet holding an accumulated, unswept
+    platform fee -- see CryptoWallet.pending_fee_cents) to FAWN's treasury
+    address. Called only by crypto_wallet.collect_fees, never directly
+    from a user-facing endpoint.
+
+    Deliberately skips the checks send_onchain_usdc layers on top of
+    _settle_onchain_transfer (hard per-tx/velocity limits, OFAC/address-
+    risk screening, first-time-recipient review holds) -- those exist to
+    catch attacker-controlled recipients and compromised user sessions.
+    Here the destination is always FAWN's own fixed treasury wallet, and
+    the amount is bounded by what FAWN's own ledger already recorded as
+    owed (CryptoWallet.pending_fee_cents), not by user-supplied input.
+
+    Returns:
+        {"chain": "polygon"|"base", "tx_hash": "0x...", "amount_cents": int}
+
+    Raises:
+        CannotSignTransaction, NoChainHasSufficientBalance,
+        GasStationLimitExceeded, OnchainSendFailed
+    """
+    if wallet.wallet_type != "fawn_custodial" or not wallet.encrypted_private_key:
+        raise CannotSignTransaction(
+            f"No usable signing key for wallet {wallet.wallet_address} -- cannot sweep its fee."
+        )
+    if not _is_valid_eth_address(treasury_address):
+        raise CannotSignTransaction(f"Invalid treasury address: {treasury_address}")
+
+    try:
+        private_key = _decrypt_private_key(
+            wallet.encrypted_private_key,
+            key_version=wallet.key_version,
+            wrapped_dek=wallet.wrapped_dek,
+        )
+    except Exception as e:
+        raise CannotSignTransaction(f"Failed to decrypt signing key: {e}")
+
+    retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+    db.add(UserAuditLog(
+        user_id=wallet.user_id,
+        action="private_key_decrypted",
+        details=json.dumps({
+            "wallet_address": wallet.wallet_address,
+            "purpose": "sweep_wallet_fee",
+            "amount_cents": amount_cents,
+            "timestamp": datetime.utcnow().isoformat(),
+        }),
+        retention_expires_at=retention_expires,
+    ))
+    db.commit()
+
+    try:
+        return await _settle_onchain_transfer(wallet.wallet_address, private_key, treasury_address, amount_cents, db)
+    finally:
         private_key = None

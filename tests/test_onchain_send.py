@@ -66,12 +66,14 @@ def _make_custodial_user(db, with_key=True, wallet_type="fawn_custodial"):
 class _FakeChainClient:
     """Fakes every RPC method onchain_send.py calls for one chain."""
 
-    def __init__(self, native_usdc_cents=0, native_balance_wei=10**18, sent_raw_txs=None):
+    def __init__(self, native_usdc_cents=0, native_balance_wei=10**18, sent_raw_txs=None, receipt_status="0x1", never_confirms=False):
         self.native_usdc_cents = native_usdc_cents
         self.native_balance_wei = native_balance_wei
         self.sent_raw_txs = sent_raw_txs if sent_raw_txs is not None else []
         self.nonces = {}  # address -> next nonce
         self.broadcast_should_fail = False
+        self.receipt_status = receipt_status  # "0x1" success | "0x0" reverted
+        self.never_confirms = never_confirms  # eth_getTransactionReceipt always returns None
 
     async def call(self, method, params):
         if method == "eth_getBalance":
@@ -91,7 +93,9 @@ class _FakeChainClient:
             self.sent_raw_txs.append(params[0])
             return "0x" + uuid.uuid4().hex + uuid.uuid4().hex[:24]  # fake 32-byte tx hash
         if method == "eth_getTransactionReceipt":
-            return {"status": "0x1", "transactionHash": params[0]}
+            if self.never_confirms:
+                return None
+            return {"status": self.receipt_status, "transactionHash": params[0]}
         return None
 
 
@@ -492,3 +496,41 @@ async def test_malformed_recipient_address_is_rejected_before_signing(monkeypatc
             await onchain_send.send_onchain_usdc(user, "0x" + "1" * 38, 500, db)  # 2 chars short
     finally:
         db.close()
+
+
+# ── Confirmation polling: broadcast-accepted is not the same as succeeded ──
+
+@pytest.mark.asyncio
+async def test_reverted_transaction_is_detected_and_raises(monkeypatch):
+    # A transaction can land in a block and still revert (e.g. a race
+    # that leaves insufficient balance despite the pre-broadcast check
+    # above, or a paused/blacklisted contract) -- broadcast-accepted must
+    # not be treated as succeeded. See _settle_onchain_transfer's
+    # docstring for why this matters to both the ledger (send_usdc) and
+    # fee tracking (collect_fees).
+    db = SessionLocal()
+    try:
+        user, _ = _make_custodial_user(db)
+        reverting_client = _FakeChainClient(native_usdc_cents=100_000, native_balance_wei=10**18, receipt_status="0x0")
+        _patch_chain(monkeypatch, "polygon", reverting_client)
+        _patch_chain(monkeypatch, "base", _FakeChainClient(native_usdc_cents=0))
+
+        with pytest.raises(onchain_send.OnchainSendFailed, match="reverted"):
+            await onchain_send.send_onchain_usdc(user, "0x" + "1" * 40, 500, db)
+
+        # The broadcast really did happen -- this is specifically the
+        # post-broadcast revert being caught, not a pre-broadcast rejection.
+        assert len(reverting_client.sent_raw_txs) == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_transaction_that_never_confirms_raises_after_timeout(monkeypatch):
+    # Calls _wait_for_confirmation directly with a short poll budget --
+    # going through the full send stack with the real default (30 polls
+    # x 2s = up to 60s) would make this test unacceptably slow to exercise
+    # the same timeout logic.
+    _patch_chain(monkeypatch, "polygon", _FakeChainClient(never_confirms=True))
+    with pytest.raises(onchain_send.OnchainSendFailed, match="did not confirm"):
+        await onchain_send._wait_for_confirmation("polygon", "0xabc123", max_polls=2, poll_interval_seconds=0.01)

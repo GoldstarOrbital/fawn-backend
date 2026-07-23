@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./fawn.db"
 
     # ---- Third-party integrations ----
-    # FAWN is self-custodial/crypto-native. The only remaining third
-    # parties are Alpaca (investing) and Plaid (bank-account linking).
+    # FAWN is custodial/crypto-native. The only remaining third parties are
+    # Alpaca (investing) and Plaid (bank-account linking).
     # Every client is guarded: an unset key raises a clear
     # "<provider> is not configured" error instead of calling out with a
     # bad key.
@@ -57,7 +57,13 @@ class Settings(BaseSettings):
     stripe_publishable_key: str = ""
     stripe_webhook_secret: str = ""
     allow_unsigned_stripe_webhooks: bool = False
-    fawn_encryption_key: str = ""  # Encryption key for custodial wallet private keys
+    fawn_encryption_key: str = ""  # Active Key Encryption Key (KEK) for custodial wallets' envelope-encrypted keys
+    fawn_encryption_key_previous: str = ""  # Prior KEK, tried as a fallback when unwrapping with the active key fails -- lets FAWN_ENCRYPTION_KEY be rotated without a synchronous re-encryption of every wallet first
+    # Off by default -- collect_fees() signs and broadcasts real on-chain
+    # transactions. Turning this on means fee sweeps to treasury happen
+    # automatically once a day with no human in the loop; until it's set,
+    # POST /fees/collect (admin-key-gated) is the only way fees get swept.
+    enable_fee_sweep_scheduler: bool = False
     uniswap_api_key: str = ""  # Uniswap v3 API key for trading quotes
     alchemy_api_key: str = ""  # Alchemy RPC for blockchain monitoring (Polygon)
     gas_station_private_key: str = ""  # FAWN-controlled wallet that sponsors gas for custodial-wallet sends
@@ -72,6 +78,15 @@ class Settings(BaseSettings):
     max_send_cents_per_tx: int = 200_000  # $2,000 per single send
     max_send_cents_per_day: int = 500_000  # $5,000 per user per rolling 24h
     max_gas_topups_per_day: int = 200  # platform-wide, protects the gas station wallet from a runaway loop
+
+    # ---- Referral rewards ----
+    # Paid as a ledger credit to BOTH the inviter and the new user the moment
+    # a referral code is applied. This is a real liability against the
+    # custodial float (a credited dollar is a dollar the treasury owes), so
+    # the amount is env-tunable and the whole program can be switched off
+    # without a deploy.
+    referral_rewards_enabled: bool = True
+    referral_bonus_cents: int = 100  # $1.00 each to inviter and invitee
 
     # ---- Fraud & risk controls ----
     # Dollar caps alone don't catch a compromised account rapidly draining

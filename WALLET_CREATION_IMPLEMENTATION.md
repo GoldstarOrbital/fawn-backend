@@ -83,7 +83,7 @@ address, private_key = _derive_wallet_from_seed(seed_phrase)
 **Use Cases:**
 - Users who want convenience (no seed backup)
 - Users without hardware wallets
-- Users less concerned with self-custody (FAWN risk accepted)
+- Users who prefer a managed custodial wallet (FAWN holds the encrypted signing key)
 
 **Implementation:**
 ```python
@@ -474,4 +474,3 @@ uvicorn main:app --reload
 5. **Social Recovery** — Friends/guardians as backup for lost seeds
 6. **On-Chain Sync** — Broadcast wallet creation to blockchain
 7. **Seed Export** — Additional export formats (QR code, PDF)
-

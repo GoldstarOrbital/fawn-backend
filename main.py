@@ -111,29 +111,67 @@ def _init_db_schema():
                 table_exists = result.fetchone() is not None
 
                 if not table_exists:
-                    # Create table if it doesn't exist
+                    # Create table if it doesn't exist. user_id is nullable
+                    # (not NOT NULL) to allow the one treasury-wallet row,
+                    # which has no owning user -- see
+                    # services/crypto_wallet.py::get_or_create_treasury_wallet.
+                    # Postgres allows multiple NULLs under a UNIQUE column.
                     conn.execute(text("""
                         CREATE TABLE IF NOT EXISTS crypto_wallets (
                             id VARCHAR PRIMARY KEY,
-                            user_id VARCHAR NOT NULL UNIQUE,
+                            user_id VARCHAR UNIQUE,
                             wallet_address VARCHAR NOT NULL UNIQUE,
                             wallet_type VARCHAR NOT NULL,
                             chain VARCHAR NOT NULL DEFAULT 'polygon',
                             usdc_balance_cents INTEGER NOT NULL DEFAULT 0,
                             encrypted_private_key BYTEA,
+                            wrapped_dek BYTEA,
+                            key_version VARCHAR,
+                            pending_fee_cents INTEGER NOT NULL DEFAULT 0,
+                            is_treasury BOOLEAN NOT NULL DEFAULT FALSE,
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                         )
                     """))
                     print("[startup] created crypto_wallets table")
                 else:
-                    # Table exists, ensure encrypted_private_key column exists
+                    # Table exists, ensure newer columns exist. BYTEA
+                    # columns are added here rather than via _patch() below
+                    # -- _patch()'s single DDL string has to work on both
+                    # Postgres and SQLite, and "BYTEA" isn't a real SQLite
+                    # type (this whole block is Postgres-only already, per
+                    # the information_schema.tables check above).
                     cols = {c["name"] for c in inspector.get_columns("crypto_wallets")}
                     if "encrypted_private_key" not in cols:
                         conn.execute(text("ALTER TABLE crypto_wallets ADD COLUMN encrypted_private_key BYTEA"))
                         print("[startup] added encrypted_private_key column to crypto_wallets")
+                    if "wrapped_dek" not in cols:
+                        conn.execute(text("ALTER TABLE crypto_wallets ADD COLUMN wrapped_dek BYTEA"))
+                        print("[startup] added wrapped_dek column to crypto_wallets")
         except Exception as e:
             print(f"[startup] crypto_wallets setup failed (continuing): {e}")
+
+        # crypto_wallets: fee-sweep tracking, treasury flag, envelope-
+        # encryption key version (services/crypto_wallet.py's hardened
+        # custodial key storage). VARCHAR/INTEGER/BOOLEAN are safe DDL
+        # across both Postgres and SQLite, unlike the BYTEA columns above.
+        _patch("crypto_wallets", "pending_fee_cents", "pending_fee_cents INTEGER DEFAULT 0 NOT NULL")
+        _patch("crypto_wallets", "is_treasury", "is_treasury BOOLEAN DEFAULT FALSE NOT NULL")
+        _patch("crypto_wallets", "key_version", "key_version VARCHAR")
+
+        # Treasury wallet (services/crypto_wallet.py::get_or_create_treasury_wallet)
+        # has no owning user, so user_id must be nullable. Idempotent:
+        # dropping an already-dropped NOT NULL constraint is a silent
+        # no-op on Postgres; not fatal if it fails (e.g. SQLite, which
+        # has no ALTER COLUMN support at all -- SQLite tables created
+        # fresh via Base.metadata.create_all() already get the nullable
+        # column straight from the CryptoWallet model).
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE crypto_wallets ALTER COLUMN user_id DROP NOT NULL"))
+                print("[startup] made crypto_wallets.user_id nullable (for treasury wallet)")
+        except Exception as e:
+            print(f"[startup] crypto_wallets.user_id nullable patch skipped/failed (continuing): {e}")
 
         # chain_scan_checkpoints columns added after initial schema
         _patch("chain_scan_checkpoints", "pre_ledger_baseline_cents", "pre_ledger_baseline_cents INTEGER DEFAULT 0 NOT NULL")
@@ -178,6 +216,51 @@ def _init_db_schema():
             # Not fatal -- e.g. running on SQLite locally, which has no
             # pg_constraint catalog at all.
             print(f"[startup] crypto_transfers status constraint patch skipped/failed (continuing): {e}")
+
+        # pending_fee_cents >= 0 CHECK constraint. models.py's CryptoWallet
+        # declares it, but create_all() never alters an existing table's
+        # constraints -- crypto_wallets already exists in production, so
+        # this has to be added explicitly (same reasoning as the
+        # crypto_transfers.status block above, just a brand-new constraint
+        # rather than one being replaced). services/crypto_wallet.py's
+        # collect_fees() docstring documents this constraint as a backstop
+        # against a negative pending_fee_cents -- without this block that
+        # backstop only exists in application code, never in the DB, on
+        # any table that existed before this patch was added.
+        try:
+            with engine.begin() as conn:
+                already_correct = conn.execute(text(
+                    "SELECT 1 FROM pg_constraint WHERE conname = 'ck_crypto_wallets_pending_fee_cents'"
+                )).fetchone()
+                if not already_correct:
+                    conn.execute(text(
+                        "ALTER TABLE crypto_wallets ADD CONSTRAINT ck_crypto_wallets_pending_fee_cents "
+                        "CHECK (pending_fee_cents >= 0)"
+                    ))
+                    print("[startup] added ck_crypto_wallets_pending_fee_cents constraint")
+        except Exception as e:
+            print(f"[startup] crypto_wallets pending_fee_cents constraint patch skipped/failed (continuing): {e}")
+
+        # At most one treasury wallet, enforced at the DB level -- matches
+        # the partial unique Index in models.py's CryptoWallet.__table_args__.
+        # get_or_create_treasury_wallet (services/crypto_wallet.py) does a
+        # plain check-then-create with no row lock; this index is what
+        # actually stops two concurrent first-ever calls (the daily
+        # scheduler racing a manual admin call, or Railway scaled to >1
+        # replica) from each creating a different treasury wallet -- the
+        # second INSERT fails with a real IntegrityError instead of silently
+        # succeeding. A fresh SQLite test DB gets this from the model
+        # directly via create_all(); this block is only for the
+        # already-existing production Postgres table.
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_treasury_wallet "
+                    "ON crypto_wallets (is_treasury) WHERE is_treasury = true"
+                ))
+                print("[startup] ensured idx_one_treasury_wallet unique index exists")
+        except Exception as e:
+            print(f"[startup] idx_one_treasury_wallet patch skipped/failed (continuing): {e}")
 
         # audit logging (user_audit_log table is created automatically via create_all)
     except Exception as e:
@@ -387,6 +470,54 @@ async def _start_gas_freshness_check():
     asyncio.get_event_loop().create_task(_loop())
 
 
+@app.on_event("startup")
+async def _start_fee_sweep_scheduler():
+    """Daily automatic sweep of accumulated platform fees to FAWN's
+    treasury wallet (services/crypto_wallet.py::collect_fees).
+
+    Off by default (ENABLE_FEE_SWEEP_SCHEDULER) -- this signs and
+    broadcasts real on-chain transactions with no human in the loop, a
+    meaningfully bigger step than the other startup loops in this file
+    (which only read/log). Until it's turned on, POST /fees/collect
+    (admin-key-gated, routers/crypto.py) is the only way fees get swept;
+    turning this on just means that same operation also runs unattended
+    once a day.
+    """
+    import asyncio
+
+    if not settings.enable_fee_sweep_scheduler:
+        print("[fees] automatic daily sweep disabled (ENABLE_FEE_SWEEP_SCHEDULER=false) -- use POST /fees/collect")
+        return
+
+    async def _loop():
+        while True:
+            try:
+                db = SessionLocal()
+                try:
+                    from services import crypto_wallet
+                    result = await crypto_wallet.collect_fees(db)
+                    if result["status"] != "noop":
+                        print(
+                            f"[fees] swept ${result['total_fees']/100:.2f} from "
+                            f"{result['transfers_settled']} wallet(s) to {result['treasury_wallet']} "
+                            f"(status: {result['status']}, failures: {len(result['failures'])})"
+                        )
+                        if result["failures"]:
+                            print(f"[fees] failures this run: {result['failures']}")
+                        if result.get("treasury_seed_phrase"):
+                            print("[fees] NEW TREASURY WALLET CREATED -- back up its seed phrase via the /fees/collect response NOW, it will not be logged again.")
+                finally:
+                    db.close()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[fees] daily sweep pass failed (will retry next cycle): {e}")
+            await asyncio.sleep(24 * 60 * 60)  # once a day
+
+    asyncio.get_event_loop().create_task(_loop())
+    print("[fees] automatic daily sweep enabled")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "0.2.0"}
@@ -411,6 +542,45 @@ def status():
         "version": "0.2.0",
         "uptime_seconds": uptime_seconds,
         "db_ok": db_ok,
+    }
+
+
+@app.get("/status/gas-station")
+async def gas_station_status():
+    """Report the gas-station wallet's ADDRESS and native balances.
+
+    This is the FAWN-controlled wallet that sponsors gas for custodial
+    sends (services/onchain_send.py) — it must hold native gas tokens
+    (POL on Polygon, ETH on Base) for on-chain sends and fee sweeps to
+    work. Only the PUBLIC address and on-chain balances are exposed here
+    (both are public information on-chain); the private key never leaves
+    the environment.
+    """
+    from eth_account import Account
+    from services import blockchain_monitor as bm
+    from services import onchain_send
+
+    if not settings.gas_station_private_key:
+        return {"configured": False, "address": None,
+                "detail": "GAS_STATION_PRIVATE_KEY is not set — gas sponsorship (and therefore on-chain sends and fee sweeps) is disabled."}
+
+    address = Account.from_key(settings.gas_station_private_key).address
+    balances = {}
+    for chain in bm.CHAINS:
+        try:
+            wei = await onchain_send._get_native_balance(chain, address)
+            balances[chain] = {
+                "wei": wei,
+                "native": round(wei / 1e18, 6) if wei is not None else None,
+            }
+        except Exception as e:
+            balances[chain] = {"wei": None, "native": None, "error": str(e)[:80]}
+
+    return {
+        "configured": True,
+        "address": address,
+        "balances": balances,
+        "note": "Fund this address with native gas tokens (POL on Polygon, ETH on Base). It sponsors gas top-ups for custodial user wallets.",
     }
 
 

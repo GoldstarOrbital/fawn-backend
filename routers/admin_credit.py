@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from database import get_db
-from models import User, UserAuditLog, ChainScanCheckpoint, CryptoDeposit, CryptoTransfer
+from models import User, UserAuditLog, ChainScanCheckpoint, CryptoDeposit, CryptoTransfer, CryptoWallet
 from routers.admin import require_admin_key
 import json
 
@@ -141,6 +141,24 @@ async def approve_transfer(
 
         sender.usdc_balance_cents -= total_needed
         sender.total_fees_paid_cents += transfer.fee_cents
+
+        # Same accounting as the normal send path (services/crypto_wallet.py
+        # ::send_usdc) -- only amount_cents moved on-chain just now, so the
+        # fee stays as real USDC in sender's wallet until collect_fees()
+        # sweeps it. Held/reviewed transfers must track this too, or every
+        # fee from an admin-approved send would silently go untracked.
+        sender_wallet_row = db.query(CryptoWallet).filter(
+            CryptoWallet.wallet_address.ilike(sender.crypto_wallet_address)
+        ).first()
+        if sender_wallet_row:
+            # DB-side relative increment, not a Python-side read-modify-
+            # write -- see the identical reasoning in
+            # services/crypto_wallet.py::send_usdc's own pending_fee_cents
+            # accrual.
+            db.query(CryptoWallet).filter(CryptoWallet.id == sender_wallet_row.id).update(
+                {"pending_fee_cents": CryptoWallet.pending_fee_cents + transfer.fee_cents},
+                synchronize_session=False,
+            )
 
         retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
         db.add(UserAuditLog(

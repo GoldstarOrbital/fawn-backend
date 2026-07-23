@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer, LargeBinary, ForeignKey, CheckConstraint, Index
+from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer, LargeBinary, ForeignKey, CheckConstraint, Index, text
 from sqlalchemy.sql import func
 from database import Base
 import uuid
@@ -34,7 +34,7 @@ class User(Base):
     # Total platform fees paid (in cents), for analytics/reporting
     total_fees_paid_cents = Column(Integer, default=0, nullable=False)
 
-    # Third-party account identifiers. FAWN is self-custodial/crypto-native —
+    # Third-party account identifiers. FAWN is custodial/crypto-native —
     # investing (Alpaca) and bank-account linking (Plaid, see PlaidItem) are
     # the only remaining third parties.
     alpaca_account_id = Column(String, nullable=True)     # Alpaca brokerage account
@@ -251,17 +251,43 @@ class CryptoWallet(Base):
     Users can have at most one wallet per account, but this table allows
     wallet migration / multi-chain support in the future without schema rewrites.
     balance_cents is the canonical source of truth for ledger balance.
-    Custodial private keys are encrypted with Fernet (AES-256-GCM).
+
+    user_id is nullable to allow exactly one row with no owning user: FAWN's
+    own treasury wallet (is_treasury=True — see
+    services/crypto_wallet.py::get_or_create_treasury_wallet). Postgres and
+    SQLite both allow multiple NULLs under a UNIQUE constraint, so this
+    doesn't weaken the "one wallet per user" guarantee for real users.
+
+    Custodial private keys are envelope-encrypted: a random per-wallet Data
+    Encryption Key (DEK) encrypts the private key, and the DEK itself is
+    wrapped by FAWN_ENCRYPTION_KEY (the Key Encryption Key / KEK) before
+    storage. This bounds what the master KEK ever directly touches to small
+    32-byte DEKs rather than every private key, and lets FAWN_ENCRYPTION_KEY
+    be rotated (re-wrap every DEK) without re-touching private key material.
+    key_version distinguishes this ("v2") from wallets created before this
+    scheme existed ("legacy" / NULL — see
+    services/crypto_wallet.py::_decrypt_private_key), which are still
+    decryptable exactly as before; there's no forced migration.
     """
     __tablename__ = "crypto_wallets"
 
     id = Column(String, primary_key=True, default=new_id)
-    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)  # 1:1 per user
+    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=True, unique=True, index=True)  # 1:1 per user; NULL only for the treasury wallet
     wallet_address = Column(String, nullable=False, unique=True, index=True)
     wallet_type = Column(String, nullable=False)  # "non_custodial" | "fawn_custodial"
     chain = Column(String, nullable=False, default="polygon")  # "polygon" | "ethereum"
     usdc_balance_cents = Column(Integer, default=0, nullable=False)
-    encrypted_private_key = Column(LargeBinary, nullable=True)  # Fernet-encrypted key for custodial wallets only
+    encrypted_private_key = Column(LargeBinary, nullable=True)  # Fernet-encrypted key (custodial only) — DEK-encrypted if key_version == "v2", else legacy direct-KEK
+    wrapped_dek = Column(LargeBinary, nullable=True)  # KEK-wrapped Data Encryption Key, only set when key_version == "v2"
+    key_version = Column(String, nullable=True)  # NULL/"legacy" | "v2" — see docstring above
+    # Real USDC that stayed in THIS wallet's on-chain balance because a send
+    # deducted amount+fee from the ledger but only ever moved `amount`
+    # on-chain (see services/crypto_wallet.py::send_usdc). Accumulates here
+    # until services/crypto_wallet.py::collect_fees sweeps it to treasury.
+    pending_fee_cents = Column(Integer, default=0, nullable=False)
+    # True for exactly one row: FAWN's own treasury wallet, the destination
+    # for fee sweeps. Has no owning user (user_id is NULL).
+    is_treasury = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Constraints and indexes
@@ -269,7 +295,21 @@ class CryptoWallet(Base):
         CheckConstraint("wallet_type IN ('non_custodial', 'fawn_custodial')"),
         CheckConstraint("chain IN ('polygon', 'ethereum')"),
         CheckConstraint("usdc_balance_cents >= 0"),
+        CheckConstraint("pending_fee_cents >= 0"),
         Index('idx_crypto_wallet_user_chain', 'user_id', 'chain'),
+        # At most one treasury row, enforced at the DB level (not just in
+        # application code) -- get_or_create_treasury_wallet does a plain
+        # check-then-create with no row lock, so this is what actually
+        # stops two concurrent first-ever calls (the daily scheduler
+        # racing a manual admin call, or Railway scaled to >1 replica)
+        # from each creating a different treasury wallet. A partial index
+        # (not a plain unique column) because is_treasury is FALSE for
+        # every ordinary user wallet -- only the TRUE case needs to be unique.
+        Index(
+            'idx_one_treasury_wallet', 'is_treasury', unique=True,
+            postgresql_where=text('is_treasury = true'),
+            sqlite_where=text('is_treasury = 1'),
+        ),
     )
 
 
