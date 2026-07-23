@@ -65,21 +65,13 @@ async def test_custodial_wallet_gets_a_decryptable_key():
 
 
 @pytest.mark.asyncio
-async def test_non_custodial_wallet_returns_seed_and_stores_no_key():
+async def test_non_custodial_wallet_creation_is_rejected():
     db = SessionLocal()
     try:
         user = _make_bare_user(db)
-        result = await crypto_wallet.create_wallet(user.id, db, wallet_type="non_custodial")
-
-        assert result["wallet_type"] == "non_custodial"
-        assert result["seed_phrase"] is not None
-        assert len(result["seed_phrase"].split()) == 12
-
-        row = db.query(CryptoWallet).filter(
-            CryptoWallet.wallet_address == result["wallet_address"]
-        ).first()
-        assert row is not None
-        assert row.encrypted_private_key is None
+        with pytest.raises(ValueError, match="custodial"):
+            await crypto_wallet.create_wallet(user.id, db, wallet_type="non_custodial")
+        assert db.query(CryptoWallet).filter(CryptoWallet.user_id == user.id).count() == 0
     finally:
         db.close()
 

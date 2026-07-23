@@ -36,10 +36,8 @@ def _validate_eth_address(addr: str) -> bool:
 
 
 class CreateWalletRequest(BaseModel):
-    # non_custodial is still an accepted value here (not narrowed to a
-    # single-value pattern) so a request sends a clear, product-specific
-    # 400 explaining why instead of a generic Pydantic validation error --
-    # see the check in create_wallet() below.
+    # Keep the legacy input shape so older clients receive a clear product
+    # error instead of silently creating a different custody model.
     wallet_type: str = Field(default="fawn_custodial", pattern="^(non_custodial|fawn_custodial)$")
 
 
@@ -48,7 +46,7 @@ class CreateWalletResponse(BaseModel):
     wallet_type: str
     usdc_balance: float
     chain: str
-    seed_phrase: str | None = None  # only for non_custodial, returned ONCE
+    seed_phrase: str | None = None  # always null for FAWN custodial wallets
 
 
 class BalanceResponse(BaseModel):
@@ -196,14 +194,13 @@ async def create_wallet(
       unable to send (server-side signing requires FAWN to hold the key) — this only
       stops new ones from being created into that same dead end.
 
-    Returns wallet address and (for non-custodial only) the seed phrase.
-    CRITICAL: Seed phrase is shown ONCE and cannot be recovered if lost.
+    Returns the wallet address without exposing any seed phrase or private key.
     """
     if req.wallet_type == "non_custodial":
         raise HTTPException(
             status_code=400,
             detail=(
-                "Self-custody (non_custodial) wallets are no longer offered for new accounts. "
+                "Non-custodial wallets are no longer offered for new accounts. "
                 "FAWN wallets are custodial by default -- FAWN needs to hold the signing key "
                 "for instant sends to actually work."
             ),

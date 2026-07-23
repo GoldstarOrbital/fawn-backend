@@ -25,7 +25,8 @@ class User(Base):
     # ── CRYPTO-NATIVE WALLET (NEW ARCHITECTURE) ──
     # Stablecoin wallet address (Ethereum/Polygon). Set when user creates wallet.
     crypto_wallet_address = Column(String, nullable=True, unique=True, index=True)
-    # Wallet type: "non_custodial" (user manages keys) or "fawn_custodial" (FAWN holds keys)
+    # New accounts are fawn_custodial. Legacy non-custodial rows may remain for
+    # migration/audit purposes but cannot be created through the API.
     wallet_type = Column(String, nullable=True)  # default null until wallet created
     # USDC balance in platform ledger (Decimal, in whole USD cents for precision)
     # This tracks the balance per our internal ledger, not necessarily on-chain (may lag)
@@ -275,7 +276,7 @@ class CryptoWallet(Base):
     id = Column(String, primary_key=True, default=new_id)
     user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=True, unique=True, index=True)  # 1:1 per user; NULL only for the treasury wallet
     wallet_address = Column(String, nullable=False, unique=True, index=True)
-    wallet_type = Column(String, nullable=False)  # "non_custodial" | "fawn_custodial"
+    wallet_type = Column(String, nullable=False)  # "fawn_custodial" for new wallets; legacy rows may be non-custodial
     chain = Column(String, nullable=False, default="polygon")  # "polygon" | "ethereum"
     usdc_balance_cents = Column(Integer, default=0, nullable=False)
     encrypted_private_key = Column(LargeBinary, nullable=True)  # Fernet-encrypted key (custodial only) — DEK-encrypted if key_version == "v2", else legacy direct-KEK

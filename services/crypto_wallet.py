@@ -3,7 +3,7 @@ Stablecoin wallet service for FAWN's crypto-native architecture.
 
 SECURITY:
 - Supports USDC on Polygon and Ethereum
-- Two wallet types: non_custodial (user manages keys) / fawn_custodial (FAWN holds keys)
+- New accounts are fawn_custodial; legacy non-custodial rows are read-only
 - No gas fees — flat $0.01 per transfer
 - All operations logged to UserAuditLog (7-year retention for compliance)
 - Seed phrases never logged, returned only once
@@ -370,22 +370,24 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
     Args:
         user_id: FAWN user ID
         db: database session
-        wallet_type: "non_custodial" (user manages keys) or "fawn_custodial" (FAWN holds)
+        wallet_type: retained as an internal compatibility argument, but must
+            be "fawn_custodial". New FAWN accounts never expose a
+            non-custodial key model.
 
     Returns:
         {
             "wallet_address": "0x... (EIP-55 checksummed)",
-            "wallet_type": "fawn_custodial" | "non_custodial",
+            "wallet_type": "fawn_custodial",
             "usdc_balance": 0.0,
             "chain": "polygon" | "ethereum",
-            "seed_phrase": "word1 word2 ... word12" (ONLY if non_custodial; user must save this)
+            "seed_phrase": None (custodial accounts never expose key material)
         }
 
     Raises:
         ValueError if user already has a wallet or wallet_type is invalid
     """
-    if wallet_type not in ("non_custodial", "fawn_custodial"):
-        raise ValueError(f"Invalid wallet_type: {wallet_type}")
+    if wallet_type != "fawn_custodial":
+        raise ValueError("FAWN accounts are custodial; non-custodial wallets are not supported.")
 
     # Check if user already has a wallet
     user = db.query(User).filter(User.id == user_id).first()
@@ -457,14 +459,13 @@ async def create_wallet(user_id: str, db: Session, wallet_type: str = "fawn_cust
 
     db.commit()
 
-    # SECURITY: Return seed phrase ONLY for non-custodial wallets
-    # For custodial, FAWN holds the encrypted key; user never sees raw seed/key
+    # SECURITY: FAWN holds the encrypted key; user never sees raw seed/key.
     return {
         "wallet_address": wallet_address,
         "wallet_type": wallet_type,
         "usdc_balance": 0.0,
         "chain": USDC_CHAIN,
-        "seed_phrase": seed_phrase if wallet_type == "non_custodial" else None,
+        "seed_phrase": None,
     }
 
 

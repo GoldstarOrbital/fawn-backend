@@ -215,15 +215,11 @@ def reset_password(request: Request, req: ResetPasswordRequest, db: Session = De
 
 @router.post("/wallets/create")
 async def create_user_wallet(
-    wallet_type: str = "fawn_custodial",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Create a new stablecoin wallet for the current user.
-
-    Args:
-        wallet_type: "fawn_custodial" (FAWN holds keys) or "non_custodial" (user holds keys)
 
     Returns:
         {
@@ -231,14 +227,13 @@ async def create_user_wallet(
             "wallet_type": "fawn_custodial",
             "usdc_balance": 0.0,
             "chain": "ethereum",
-            "seed_phrase": "..." (only if wallet_type == "non_custodial")
+            "seed_phrase": null
         }
 
-    Note: seed_phrase is ONLY returned once. User must save it immediately.
+    FAWN accounts are custodial: the signing key is encrypted at rest and is
+    never returned to the browser. This legacy route intentionally has no
+    wallet-type input so clients cannot opt into an unsupported key model.
     """
-    if wallet_type not in ("fawn_custodial", "non_custodial"):
-        raise HTTPException(status_code=400, detail="Invalid wallet_type")
-
     if current_user.crypto_wallet_address:
         raise HTTPException(
             status_code=400,
@@ -246,7 +241,7 @@ async def create_user_wallet(
         )
 
     try:
-        wallet_data = await create_wallet(current_user.id, db, wallet_type=wallet_type)
+        wallet_data = await create_wallet(current_user.id, db, wallet_type="fawn_custodial")
         return wallet_data
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
