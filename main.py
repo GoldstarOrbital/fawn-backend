@@ -467,17 +467,34 @@ async def _start_podcast_scheduler():
     import asyncio
     from services import podcast as podcast_svc
 
+    async def _publish_with_retry_context(reason: str):
+        db = SessionLocal()
+        try:
+            episode = await podcast_svc.publish_today(db)
+            if episode:
+                print(f"[podcast] {reason}: {episode.episode_date} published/delivered")
+            else:
+                print(f"[podcast] {reason}: generation unavailable; will retry")
+            return episode
+        finally:
+            db.close()
+
     async def _loop():
         while True:
             try:
+                # Catch up immediately after a restart if today's 3:30 AM
+                # Pacific release time has passed. This is independent of any
+                # Codex/browser process and safely reuses delivery state.
+                now = podcast_svc.datetime.now(podcast_svc.PACIFIC)
+                if (now.hour, now.minute) >= (podcast_svc.RELEASE_HOUR, podcast_svc.RELEASE_MINUTE):
+                    episode = await _publish_with_retry_context("startup/catch-up")
+                    if not episode:
+                        await asyncio.sleep(300)
+                        continue
                 await asyncio.sleep(podcast_svc.seconds_until_next_release())
-                db = SessionLocal()
-                try:
-                    episode = await podcast_svc.generate_episode(db)
-                    if episode:
-                        await podcast_svc.send_episode_to_subscribers(db, episode)
-                finally:
-                    db.close()
+                episode = await _publish_with_retry_context("scheduled")
+                if not episode:
+                    await asyncio.sleep(300)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

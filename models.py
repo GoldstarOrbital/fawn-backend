@@ -171,6 +171,30 @@ class PodcastEpisode(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class PodcastDelivery(Base):
+    """Durable, per-user delivery state for a Daily Brief episode.
+
+    A scheduler restart may safely retry pending deliveries, while the unique
+    episode/user pair prevents duplicate email sends after a successful run.
+    """
+    __tablename__ = "podcast_deliveries"
+
+    id = Column(String, primary_key=True, default=new_id)
+    episode_id = Column(String, ForeignKey("podcast_episodes.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending | sent | failed
+    attempts = Column(Integer, nullable=False, default=0)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(String(300), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'sent', 'failed')"),
+        Index("uq_podcast_delivery_episode_user", "episode_id", "user_id", unique=True),
+    )
+
+
 class NewsAlert(Base):
     """A saved news-watch query for a user ("AI alerts").
 
