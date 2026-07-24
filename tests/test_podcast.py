@@ -4,6 +4,8 @@ All Anthropic/TTS/RSS calls are mocked; no test touches the network.
 """
 import uuid
 
+import pytest
+
 from database import SessionLocal
 from models import PodcastEpisode
 from config import settings
@@ -122,6 +124,19 @@ def test_no_script_means_no_episode(client, monkeypatch):
         assert db.query(PodcastEpisode).count() == 0
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_source_grounded_script_publishes_without_anthropic(monkeypatch):
+    monkeypatch.setattr(podcast_svc.claude_svc, "_anthropic_configured", lambda: False)
+    script = await podcast_svc.generate_script(
+        [{"title": "Jobs report moves markets", "summary": "Investors watched new employment data.", "source": "Reuters"}],
+        [{"title": "Congress considers a bill", "summary": "Lawmakers discussed the proposal.", "source": "AP"}],
+    )
+    assert script is not None
+    assert "Jobs report moves markets" in script
+    assert "Congress considers a bill" in script
+    assert "automatically compiled by FAWN" in script
 
 
 def test_scheduler_math_targets_330_pacific():

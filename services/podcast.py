@@ -9,6 +9,7 @@ Every stage degrades honestly: no Anthropic key -> no episode (we never
 publish a fake script); TTS failure -> episode publishes as transcript-only.
 """
 from datetime import datetime, timedelta
+import re
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -52,13 +53,62 @@ def _headline_block(articles: list[dict]) -> str:
     return "\n".join(f"- {a['title']} ({a['source']}): {a['summary']}" for a in articles if a.get("title"))
 
 
-async def generate_script(financial: list[dict], world: list[dict]) -> str | None:
-    """Write the spoken script via Claude. Returns None if no key configured
-    or the call fails — callers must not publish anything in that case."""
-    if not claude_svc._anthropic_configured():
-        print("[podcast] skipped: no Anthropic key configured")
+def _spoken_article(article: dict) -> str:
+    """Turn a sourced RSS item into a short sentence without adding facts."""
+    title = re.sub(r"\s+", " ", str(article.get("title") or "")).strip().rstrip(".")
+    summary = re.sub(r"\s+", " ", str(article.get("summary") or "")).strip()
+    if not title:
+        return ""
+    if summary:
+        # Feed summaries can be extremely long; trim only length, never add
+        # interpretation or numbers not present in the source material.
+        summary = summary[:420].rsplit(" ", 1)[0].rstrip(". ") + "."
+        return f"{title}. {summary}"
+    return f"{title}."
+
+
+def build_source_grounded_script(financial: list[dict], world: list[dict]) -> str | None:
+    """Publishable no-LLM Daily Brief fallback.
+
+    This is deliberately mechanical: it speaks only the fetched headline
+    titles and summaries, ordered financial news first. It keeps the Daily
+    Brief autonomous even when optional AI credentials or an AI provider are
+    unavailable, rather than silently publishing nothing.
+    """
+    financial_lines = [_spoken_article(article) for article in financial[:14]]
+    world_lines = [_spoken_article(article) for article in world[:10]]
+    financial_lines = [line for line in financial_lines if line]
+    world_lines = [line for line in world_lines if line]
+    if not financial_lines and not world_lines:
         return None
-    if not financial and not world:
+
+    date_line = datetime.now(PACIFIC).strftime("%A, %B %d, %Y")
+    parts = [
+        f"Good morning. This is the FAWN Daily Brief for {date_line}.",
+        "We begin with financial and economic headlines, followed by U.S. and world news.",
+    ]
+    parts.extend(financial_lines)
+    if world_lines:
+        parts.append("Now, the broader news rundown.")
+        parts.extend(world_lines)
+    parts.append(
+        "This briefing is automatically compiled by FAWN from public news feeds. "
+        "It is informational only and not investment, financial, legal, or tax advice."
+    )
+    return " ".join(parts)
+
+
+async def generate_script(financial: list[dict], world: list[dict]) -> str | None:
+    """Write the spoken script, with a source-grounded local fallback.
+
+    Anthropic improves narration when configured, but is never a dependency
+    for the scheduled FAWN Daily Brief to publish.
+    """
+    fallback = build_source_grounded_script(financial, world)
+    if not claude_svc._anthropic_configured():
+        print("[podcast] Anthropic unavailable; using source-grounded fallback")
+        return fallback
+    if not fallback:
         print("[podcast] skipped: no headlines available")
         return None
 
@@ -103,16 +153,16 @@ async def generate_script(financial: list[dict], world: list[dict]) -> str | Non
                 },
             )
             if resp.status_code != 200:
-                print(f"[podcast] script call failed: {resp.status_code} {resp.text[:300]}")
-                return None
+                print(f"[podcast] script call failed: {resp.status_code}; using fallback")
+                return fallback
             data = resp.json()
             script = "".join(
                 b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
             ).strip()
-            return script or None
+            return script or fallback
     except Exception as e:
-        print(f"[podcast] script call raised: {e}")
-        return None
+        print(f"[podcast] script call raised; using fallback: {e}")
+        return fallback
 
 
 async def synthesize_audio(script: str) -> bytes | None:
