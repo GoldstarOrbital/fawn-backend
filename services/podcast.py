@@ -232,24 +232,34 @@ async def generate_episode(db: Session, force: bool = False) -> PodcastEpisode |
 
 
 async def send_episode_to_subscribers(db: Session, episode: PodcastEpisode) -> int:
-    """Send today's episode link to all active users via email, once each.
+    """Send an episode to every account and landing-email signup, once each.
 
     Delivery state is persisted per episode/user so restarts and retries never
     duplicate a successful send. Failed sends remain retryable on the next
     scheduler pass.
     """
     from config import settings
-    from models import User
+    from models import User, WaitlistEntry
     from email_templates import build_daily_brief
 
     if not settings.resend_api_key:
         print(f"[podcast-email] skipped: no resend_api_key configured")
         return 0
 
-    # Fetch all users with active wallets. Delivery rows are deliberately not
-    # created when email is disabled, so enabling Resend later can catch up.
-    users = db.query(User).filter(User.wallet_initialized == True).all()
-    if not users:
+    # Combine every account address with every landing waitlist address. An
+    # address that exists in both places receives one message, and the account
+    # record remains attached when available for auditability.
+    recipients: dict[str, str | None] = {}
+    for user in db.query(User).all():
+        email = (user.email or "").strip().lower()
+        if email:
+            recipients[email] = user.id
+    for signup in db.query(WaitlistEntry).all():
+        email = (signup.email or "").strip().lower()
+        if email:
+            recipients.setdefault(email, None)
+
+    if not recipients:
         print(f"[podcast-email] no subscribers")
         return 0
 
@@ -261,23 +271,39 @@ async def send_episode_to_subscribers(db: Session, episode: PodcastEpisode) -> i
 
     sent_count = 0
     async with httpx.AsyncClient(timeout=10) as client:
-        for user in users:
+        for email, user_id in recipients.items():
             delivery = db.query(PodcastDelivery).filter(
                 PodcastDelivery.episode_id == episode.id,
-                PodcastDelivery.user_id == user.id,
+                PodcastDelivery.recipient_email == email,
             ).first()
+            # Backward compatibility: prior rows were keyed only by user_id.
+            # Adopt one before deciding whether it was already sent.
+            if not delivery and user_id:
+                delivery = db.query(PodcastDelivery).filter(
+                    PodcastDelivery.episode_id == episode.id,
+                    PodcastDelivery.user_id == user_id,
+                ).first()
+                if delivery and not delivery.recipient_email:
+                    delivery.recipient_email = email
             if delivery and delivery.status == "sent":
+                db.commit()
                 continue
             if not delivery:
-                delivery = PodcastDelivery(episode_id=episode.id, user_id=user.id)
+                delivery = PodcastDelivery(
+                    episode_id=episode.id,
+                    user_id=user_id,
+                    recipient_email=email,
+                )
                 db.add(delivery)
                 db.flush()
+            elif not delivery.recipient_email:
+                delivery.recipient_email = email
             delivery.attempts += 1
             try:
                 resp = await client.post(
                     "https://api.resend.com/emails",
                     headers={"Authorization": f"Bearer {settings.resend_api_key}", "Content-Type": "application/json"},
-                    json={"from": f"FAWN <{settings.from_email}>", "to": [user.email], "subject": subject, "html": html},
+                    json={"from": f"FAWN <{settings.from_email}>", "to": [email], "subject": subject, "html": html},
                 )
                 if resp.status_code in (200, 201):
                     delivery.status = "sent"
@@ -287,14 +313,14 @@ async def send_episode_to_subscribers(db: Session, episode: PodcastEpisode) -> i
                 else:
                     delivery.status = "failed"
                     delivery.last_error = f"Resend HTTP {resp.status_code}"[:300]
-                    print(f"[podcast-email] to {user.email} failed: {resp.status_code}")
+                    print(f"[podcast-email] to {email} failed: {resp.status_code}")
             except Exception as e:
                 delivery.status = "failed"
                 delivery.last_error = str(e)[:300]
-                print(f"[podcast-email] to {user.email} raised: {e}")
+                print(f"[podcast-email] to {email} raised: {e}")
             db.commit()
 
-    print(f"[podcast-email] sent {sent_count}/{len(users)} daily briefs")
+    print(f"[podcast-email] sent {sent_count}/{len(recipients)} daily briefs")
     return sent_count
 
 

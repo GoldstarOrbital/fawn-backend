@@ -172,7 +172,7 @@ class PodcastEpisode(Base):
 
 
 class PodcastDelivery(Base):
-    """Durable, per-user delivery state for a Daily Brief episode.
+    """Durable, per-recipient delivery state for a Daily Brief episode.
 
     A scheduler restart may safely retry pending deliveries, while the unique
     episode/user pair prevents duplicate email sends after a successful run.
@@ -181,7 +181,11 @@ class PodcastDelivery(Base):
 
     id = Column(String, primary_key=True, default=new_id)
     episode_id = Column(String, ForeignKey("podcast_episodes.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # A signed-up landing email has no User row yet, so user_id is optional.
+    # recipient_email is the durable identity used to deduplicate account and
+    # waitlist recipients for the same episode.
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    recipient_email = Column(String, nullable=True, index=True)
     status = Column(String(20), nullable=False, default="pending", index=True)  # pending | sent | failed
     attempts = Column(Integer, nullable=False, default=0)
     sent_at = Column(DateTime(timezone=True), nullable=True)
@@ -192,6 +196,7 @@ class PodcastDelivery(Base):
     __table_args__ = (
         CheckConstraint("status IN ('pending', 'sent', 'failed')"),
         Index("uq_podcast_delivery_episode_user", "episode_id", "user_id", unique=True),
+        Index("uq_podcast_delivery_episode_recipient", "episode_id", "recipient_email", unique=True),
     )
 
 

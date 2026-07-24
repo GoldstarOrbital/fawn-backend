@@ -104,6 +104,26 @@ def _init_db_schema():
         # user_audit_log columns
         _patch("user_audit_log", "retention_expires_at", "retention_expires_at TIMESTAMP WITH TIME ZONE")
 
+        # Daily Brief delivery now includes landing email signups as well as
+        # accounts. Backfill the new recipient identity before the startup
+        # scheduler runs so existing user deliveries do not get resent.
+        _patch("podcast_deliveries", "recipient_email", "recipient_email VARCHAR")
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE podcast_deliveries d SET recipient_email = LOWER(u.email) "
+                    "FROM users u WHERE d.user_id = u.id AND d.recipient_email IS NULL"
+                ))
+                conn.execute(text("ALTER TABLE podcast_deliveries ALTER COLUMN user_id DROP NOT NULL"))
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_podcast_delivery_episode_recipient "
+                    "ON podcast_deliveries (episode_id, recipient_email) "
+                    "WHERE recipient_email IS NOT NULL"
+                ))
+                print("[startup] prepared podcast delivery recipients")
+        except Exception as e:
+            print(f"[startup] podcast delivery recipient patch skipped/failed (continuing): {e}")
+
         # crypto_wallets table - ensure encrypted_private_key column exists
         try:
             with engine.begin() as conn:
