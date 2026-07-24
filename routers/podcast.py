@@ -75,3 +75,18 @@ async def generate_now(force: bool = False, db: Session = Depends(get_db)):
             detail="Episode generation unavailable (missing Anthropic key or no headlines).",
         )
     return _episode_meta(episode)
+
+
+@router.post("/internal/deliver", dependencies=[Depends(require_admin_key)])
+async def deliver_latest_now(db: Session = Depends(get_db)):
+    """Retry delivery of the newest published brief without regenerating it.
+
+    This is deliberately admin-key protected: it is the recovery path for a
+    corrected mail-provider credential, while PodcastDelivery keeps already
+    successful recipients from receiving a duplicate message.
+    """
+    episode = db.query(PodcastEpisode).order_by(PodcastEpisode.episode_date.desc()).first()
+    if not episode:
+        raise HTTPException(status_code=404, detail="No episode is available to deliver.")
+    sent_count = await podcast_svc.send_episode_to_subscribers(db, episode)
+    return {"episode_date": episode.episode_date, "sent_count": sent_count}

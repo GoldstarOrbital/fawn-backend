@@ -66,6 +66,32 @@ def test_generate_requires_admin_key(client):
     assert resp.status_code in (401, 403, 422)
 
 
+def test_delivery_retry_requires_admin_and_uses_latest_episode(client, monkeypatch):
+    _clear_episodes()
+    db = SessionLocal()
+    try:
+        db.add(PodcastEpisode(
+            episode_date="2026-07-24",
+            title="FAWN Daily Brief",
+            script="A short transcript.",
+            word_count=3,
+            est_duration_seconds=1,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    async def fake_send(db, episode):
+        assert episode.episode_date == "2026-07-24"
+        return 7
+
+    monkeypatch.setattr(podcast_svc, "send_episode_to_subscribers", fake_send)
+    assert client.post("/podcast/internal/deliver").status_code in (401, 403, 422)
+    response = client.post("/podcast/internal/deliver", headers=_admin_headers())
+    assert response.status_code == 200, response.text
+    assert response.json() == {"episode_date": "2026-07-24", "sent_count": 7}
+
+
 def test_latest_and_audio_endpoints(client, monkeypatch):
     _clear_episodes()
     _mock_pipeline(monkeypatch)
