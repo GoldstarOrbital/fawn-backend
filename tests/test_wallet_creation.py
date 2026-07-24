@@ -65,6 +65,29 @@ async def test_custodial_wallet_gets_a_decryptable_key():
 
 
 @pytest.mark.asyncio
+async def test_each_user_receives_a_distinct_wallet_and_balance_scope():
+    db = SessionLocal()
+    try:
+        first, second = _make_bare_user(db), _make_bare_user(db)
+        first_wallet = await crypto_wallet.create_wallet(first.id, db)
+        second_wallet = await crypto_wallet.create_wallet(second.id, db)
+
+        assert first_wallet["wallet_address"] != second_wallet["wallet_address"]
+        first.usdc_balance_cents = 1234
+        second.usdc_balance_cents = 9876
+        db.commit()
+
+        first_balance = await crypto_wallet.get_wallet_balance(first.id, db)
+        second_balance = await crypto_wallet.get_wallet_balance(second.id, db)
+        assert first_balance["wallet_address"] == first_wallet["wallet_address"]
+        assert first_balance["usdc_balance_cents"] == 1234
+        assert second_balance["wallet_address"] == second_wallet["wallet_address"]
+        assert second_balance["usdc_balance_cents"] == 9876
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_non_custodial_wallet_creation_is_rejected():
     db = SessionLocal()
     try:
