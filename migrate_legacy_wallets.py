@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 from database import SessionLocal
 from models import CryptoWallet, User, UserAuditLog, new_id
+from sqlalchemy import or_
 from services import crypto_wallet
 from services.onchain_send import _get_native_usdc_balance
 
@@ -28,49 +29,77 @@ CONFIRMATION = "MIGRATE_LEGACY_WALLETS_2026"
 
 
 def _legacy_rows(db):
-    return (
-        db.query(CryptoWallet, User)
-        .join(User, User.id == CryptoWallet.user_id)
-        .filter(
-            CryptoWallet.wallet_type == "non_custodial",
-            CryptoWallet.is_treasury.is_(False),
-            CryptoWallet.status == "active",
-        )
-        .order_by(CryptoWallet.created_at, CryptoWallet.id)
+    """Return every legacy *user*, including records with a missing wallet row.
+
+    Older releases could leave wallet state only on ``users`` or point a user
+    at a wallet row without an encrypted signing key. The previous migration
+    joined only active non-custodial ``CryptoWallet`` rows, silently skipping
+    both situations and leaving the old address and ledger visible in the UI.
+    """
+    candidates = (
+        db.query(User)
+        .filter(or_(
+            User.wallet_initialized.is_(True),
+            User.crypto_wallet_address.isnot(None),
+            User.wallet_type == "non_custodial",
+        ))
+        .order_by(User.created_at, User.id)
         .all()
     )
+    rows = []
+    for user in candidates:
+        wallets = db.query(CryptoWallet).filter(
+            CryptoWallet.is_treasury.is_(False),
+            or_(
+                CryptoWallet.user_id == user.id,
+                CryptoWallet.wallet_address.ilike(user.crypto_wallet_address) if user.crypto_wallet_address else False,
+            ),
+        ).order_by(CryptoWallet.status.desc(), CryptoWallet.created_at.desc()).all()
+        active_custodial = next((w for w in wallets if w.status == "active" and w.wallet_type == "fawn_custodial" and w.encrypted_private_key and w.wallet_address == user.crypto_wallet_address), None)
+        if active_custodial:
+            continue
+        # Prefer the active row, but retain an inactive/address-matched row in
+        # the report so its balance and chain are still reconciled.
+        legacy = next((w for w in wallets if w.status == "active"), wallets[0] if wallets else None)
+        rows.append((legacy, user))
+    return rows
 
 
-async def _reconcile(wallet: CryptoWallet, user: User) -> dict:
+async def _reconcile(wallet: CryptoWallet | None, user: User) -> dict:
     issues: list[str] = []
-    wallet_balance = int(wallet.usdc_balance_cents or 0)
+    wallet_balance = int(wallet.usdc_balance_cents or 0) if wallet else int(user.usdc_balance_cents or 0)
     user_balance = int(user.usdc_balance_cents or 0)
-    if wallet_balance != user_balance:
+    if wallet and wallet_balance != user_balance:
         issues.append(f"ledger mismatch wallet={wallet_balance} user={user_balance}")
-    if wallet.user_id != user.id or user.crypto_wallet_address != wallet.wallet_address:
+    if wallet and wallet.user_id not in (None, user.id):
         issues.append("user-to-wallet ownership mismatch")
 
-    onchain = await _get_native_usdc_balance(wallet.chain, wallet.wallet_address)
-    if onchain is None:
-        issues.append("on-chain USDC balance could not be read")
-    elif onchain != 0:
-        issues.append(f"on-chain USDC balance is {onchain} cents; manual reconciliation required")
+    old_address = user.crypto_wallet_address or (wallet.wallet_address if wallet else None)
+    chain = wallet.chain if wallet else "polygon"
+    if old_address:
+        onchain = await _get_native_usdc_balance(chain, old_address)
+        if onchain is None:
+            issues.append("on-chain USDC balance could not be read")
+        elif onchain != 0:
+            issues.append(f"on-chain USDC balance is {onchain} cents; manual reconciliation required")
+    else:
+        onchain = 0
 
     return {
         "user_id": user.id,
-        "wallet_id": wallet.id,
-        "wallet_address": wallet.wallet_address,
-        "chain": wallet.chain,
+        "wallet_id": wallet.id if wallet else None,
+        "wallet_address": old_address,
+        "chain": chain,
         "ledger_balance_cents": wallet_balance,
         "user_balance_cents": user_balance,
-        "pending_fee_cents": int(wallet.pending_fee_cents or 0),
+        "pending_fee_cents": int(wallet.pending_fee_cents or 0) if wallet else 0,
         "onchain_balance_cents": onchain,
         "issues": issues,
         "ready": not issues,
     }
 
 
-def _new_custodial_wallet(user: User, legacy: CryptoWallet, balance: int, pending_fee: int) -> CryptoWallet:
+def _new_custodial_wallet(user: User, chain: str, balance: int, pending_fee: int) -> CryptoWallet:
     seed_phrase = crypto_wallet._generate_seed_phrase()
     address, private_key = crypto_wallet._derive_wallet_from_seed(seed_phrase)
     encrypted_key, wrapped_dek = crypto_wallet._encrypt_private_key_envelope(private_key)
@@ -81,7 +110,7 @@ def _new_custodial_wallet(user: User, legacy: CryptoWallet, balance: int, pendin
         user_id=user.id,
         wallet_address=address,
         wallet_type="fawn_custodial",
-        chain=legacy.chain,
+        chain=chain,
         usdc_balance_cents=balance,
         pending_fee_cents=pending_fee,
         encrypted_private_key=encrypted_key,
@@ -119,34 +148,28 @@ async def main(apply: bool, confirmation: str | None) -> int:
         migrated = 0
         for legacy, user in _legacy_rows(db):
             # Idempotency guard if a previous run completed this user.
-            active = db.query(CryptoWallet).filter(
-                CryptoWallet.user_id == user.id,
-                CryptoWallet.wallet_type == "fawn_custodial",
-                CryptoWallet.status == "active",
-            ).first()
-            if active:
-                continue
-
-            balance = int(legacy.usdc_balance_cents or 0)
-            pending_fee = int(legacy.pending_fee_cents or 0)
-            replacement = _new_custodial_wallet(user, legacy, balance, pending_fee)
-            old_address = legacy.wallet_address
-            old_id = legacy.id
+            balance = int(legacy.usdc_balance_cents or 0) if legacy else int(user.usdc_balance_cents or 0)
+            pending_fee = int(legacy.pending_fee_cents or 0) if legacy else 0
+            replacement = _new_custodial_wallet(user, legacy.chain if legacy else "polygon", balance, pending_fee)
+            old_address = user.crypto_wallet_address or (legacy.wallet_address if legacy else None)
+            old_id = legacy.id if legacy else None
 
             # The old row remains as an immutable migration reference, but is
             # detached from the one-active-wallet user relationship.
-            legacy.user_id = None
-            legacy.status = "inactive"
-            legacy.superseded_by = replacement.id
-            legacy.deactivated_at = datetime.now(timezone.utc)
-            legacy.deactivation_reason = "replaced_by_custodial_wallet"
-            legacy.usdc_balance_cents = 0
-            legacy.pending_fee_cents = 0
+            if legacy:
+                legacy.user_id = None
+                legacy.status = "inactive"
+                legacy.superseded_by = replacement.id
+                legacy.deactivated_at = datetime.now(timezone.utc)
+                legacy.deactivation_reason = "replaced_by_custodial_wallet"
+                legacy.usdc_balance_cents = 0
+                legacy.pending_fee_cents = 0
 
             db.add(replacement)
             user.crypto_wallet_address = replacement.wallet_address
             user.wallet_type = "fawn_custodial"
             user.wallet_initialized = True
+            user.usdc_balance_cents = balance
             audit = UserAuditLog(
                 user_id=user.id,
                 action="migrated_wallet_to_custodial",
