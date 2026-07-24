@@ -19,6 +19,7 @@ from schemas import (
     UserResponse,
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    ChangePasswordRequest,
     UpdateMeRequest,
 )
 from config import settings
@@ -225,11 +226,35 @@ def reset_password(request: Request, req: ResetPasswordRequest, db: Session = De
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
+    if _password_contains_username(req.new_password, user.username or ""):
+        raise HTTPException(status_code=400, detail="Password cannot contain your username or a username part")
+
     user.hashed_password = _hash(req.new_password)
     record.used = True
     db.commit()
 
     return {"message": "Password updated. You can now log in."}
+
+
+@router.post("/change-password")
+@limiter.limit("5/minute")
+def change_password(
+    request: Request,
+    req: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change the signed-in user's password after verifying the current one."""
+    if not _verify(req.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if _password_contains_username(req.new_password, current_user.username or ""):
+        raise HTTPException(status_code=400, detail="Password cannot contain your username or a username part")
+    if _verify(req.new_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Choose a password you have not used for this account")
+
+    current_user.hashed_password = _hash(req.new_password)
+    db.commit()
+    return {"message": "Password updated."}
 
 
 @router.post("/wallets/create")

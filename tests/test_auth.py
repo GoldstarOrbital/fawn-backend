@@ -144,6 +144,38 @@ def test_patch_me_updates_school(client):
     assert get_resp.json()["school"] == "stanford"
 
 
+def test_signed_in_user_can_change_password_with_current_password(client):
+    payload = _register_payload(email="change-password@example.com", password="old-password-123")
+    payload["username"] = "change_tester"
+    register_resp = client.post("/auth/register", json=payload)
+    assert register_resp.status_code == 201
+    headers = {"Authorization": f"Bearer {register_resp.json()['access_token']}"}
+
+    bad_current = client.post(
+        "/auth/change-password",
+        json={"current_password": "wrong-password", "new_password": "fresh-password-123"},
+        headers=headers,
+    )
+    assert bad_current.status_code == 400
+
+    username_in_password = client.post(
+        "/auth/change-password",
+        json={"current_password": "old-password-123", "new_password": "change_tester-123"},
+        headers=headers,
+    )
+    assert username_in_password.status_code == 400
+
+    changed = client.post(
+        "/auth/change-password",
+        json={"current_password": "old-password-123", "new_password": "fresh-password-123"},
+        headers=headers,
+    )
+    assert changed.status_code == 200
+
+    assert client.post("/auth/login", json={"email": payload["email"], "password": "old-password-123"}).status_code == 401
+    assert client.post("/auth/login", json={"email": payload["email"], "password": "fresh-password-123"}).status_code == 200
+
+
 def test_register_and_patch_me_preserves_personalization_fields(client):
     payload = _register_payload(email="personalized@example.com")
     payload["military_status"] = "military_veteran_or_rotc"
