@@ -340,6 +340,19 @@ class InvestingWatchlist(Base):
     )
 
 
+class SnapTradeUser(Base):
+    """Encrypted FAWN-to-SnapTrade user mapping for an external brokerage link."""
+    __tablename__ = "snaptrade_users"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)
+    snaptrade_user_id = Column(String, nullable=False, unique=True, index=True)
+    encrypted_user_secret = Column(LargeBinary, nullable=False)
+    status = Column(String, nullable=False, default="active", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class CryptoTransfer(Base):
     """Internal ledger entry for P2P USDC transfers.
 

@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     alpaca_api_secret: str = ""
     alpaca_base_url: str = "https://broker-api.sandbox.alpaca.markets"
 
+    # SnapTrade — external brokerage connections.
+    snaptrade_client_id: str = ""
+    snaptrade_consumer_key: str = ""
+    snaptrade_connection_type: str = "read"
+
     # Plaid — bank-account linking (funding source switching)
     plaid_client_id: str = ""
     plaid_secret: str = ""

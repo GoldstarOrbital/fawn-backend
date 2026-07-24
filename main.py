@@ -14,7 +14,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, podcast, money_review, investing, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, podcast, money_review, investing, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade
 from config import settings
 from logging_config import configure_logging
 
@@ -370,6 +370,7 @@ app.include_router(deals.router)
 app.include_router(podcast.router)
 app.include_router(money_review.router)
 app.include_router(investing.router)
+app.include_router(snaptrade.router)
 app.include_router(plaid_link.router)
 app.include_router(onramp.router)
 
