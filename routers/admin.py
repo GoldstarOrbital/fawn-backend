@@ -425,3 +425,109 @@ def lookup_user_status(
         "crypto_wallet_row_exists": crypto_wallet_row is not None,
         "has_encrypted_private_key": bool(crypto_wallet_row and crypto_wallet_row.encrypted_private_key),
     }
+
+
+class ReissueWalletResult(BaseModel):
+    email: str
+    action: str  # "reissued" | "already_ok" | "flagged_has_funds" | "dry_run"
+    old_wallet_address: Optional[str] = None
+    new_wallet_address: Optional[str] = None
+    detail: str
+
+
+@router.post("/reissue-stranded-wallet", response_model=ReissueWalletResult)
+async def reissue_stranded_wallet(
+    email: str = Query(..., description="Account whose stranded custodial wallet to reissue."),
+    confirm: bool = Query(default=False, description="Must be true to actually reissue; otherwise dry-run."),
+    _admin: str = Depends(require_admin_key),
+    db: Session = Depends(get_db),
+):
+    """Reissue a fresh custodial wallet for an account whose current wallet has
+    NO usable signing key (created before the encrypted-key fix — FAWN can't
+    sign for it, so the user is stuck).
+
+    Safety: refuses to reissue if the old wallet holds any USDC on-chain, so
+    real funds are never abandoned. The old ledger balance is NOT preserved —
+    the new wallet starts at $0. Idempotent: a wallet that already has a usable
+    key is left untouched.
+    """
+    import json
+    from eth_account import Account
+    from models import CryptoWallet, UserAuditLog
+    from services import crypto_wallet
+    from services import blockchain_monitor as bm
+
+    user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="No user with that email.")
+
+    wallet = db.query(CryptoWallet).filter(CryptoWallet.user_id == user.id).first()
+
+    def _key_usable(w) -> bool:
+        if not w or not w.encrypted_private_key:
+            return False
+        try:
+            pk = crypto_wallet._decrypt_private_key(
+                w.encrypted_private_key, key_version=w.key_version, wrapped_dek=w.wrapped_dek
+            )
+            return Account.from_key(pk).address.lower() == (w.wallet_address or "").lower()
+        except Exception:
+            return False
+
+    old_addr = user.crypto_wallet_address or (wallet.wallet_address if wallet else None)
+
+    if _key_usable(wallet):
+        return ReissueWalletResult(
+            email=user.email, action="already_ok", old_wallet_address=old_addr,
+            new_wallet_address=old_addr, detail="Wallet already has a usable signing key; nothing to do.",
+        )
+
+    # Never abandon on-chain funds. Confirm the old address is empty on every chain.
+    if old_addr:
+        for chain in bm.CHAINS:
+            try:
+                onchain = await bm._get_combined_balance(chain, old_addr)
+            except Exception:
+                onchain = None
+            if onchain is None:
+                return ReissueWalletResult(
+                    email=user.email, action="flagged_has_funds", old_wallet_address=old_addr,
+                    detail=f"On-chain balance on {chain} could not be confirmed — refusing to reissue. Retry, or investigate manually.",
+                )
+            if onchain > 0:
+                return ReissueWalletResult(
+                    email=user.email, action="flagged_has_funds", old_wallet_address=old_addr,
+                    detail=f"Old wallet holds {onchain} cents of USDC on {chain}. Refusing to reissue so funds aren't abandoned — manual reconciliation required.",
+                )
+
+    if not confirm:
+        return ReissueWalletResult(
+            email=user.email, action="dry_run", old_wallet_address=old_addr,
+            detail="Stranded wallet with no usable key and no on-chain funds. Re-run with confirm=true to reissue a fresh custodial wallet (ledger balance will reset to $0).",
+        )
+
+    # Safe to reissue: drop the stranded row + linkage, then create a fresh
+    # custodial wallet (encrypted, round-trip-verified) with prod's real KEK.
+    if wallet is not None:
+        db.delete(wallet)
+    user.crypto_wallet_address = None
+    user.wallet_initialized = False
+    user.wallet_type = None
+    user.usdc_balance_cents = 0  # per decision: old ledger balance is not carried over
+    db.flush()
+
+    result = await crypto_wallet.create_wallet(user.id, db, wallet_type="fawn_custodial")
+
+    db.add(UserAuditLog(
+        user_id=user.id,
+        action="stranded_wallet_reissued",
+        details=json.dumps({"old_wallet_address": old_addr, "new_wallet_address": result["wallet_address"]}),
+        retention_expires_at=datetime.now(tz=timezone.utc) + timedelta(days=365 * 7),
+    ))
+    db.commit()
+
+    return ReissueWalletResult(
+        email=user.email, action="reissued", old_wallet_address=old_addr,
+        new_wallet_address=result["wallet_address"],
+        detail="Reissued a fresh custodial wallet with an encrypted signing key. Ledger balance reset to $0.",
+    )
