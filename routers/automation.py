@@ -10,7 +10,7 @@ Services:
 """
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, timezone
 import json
 from database import get_db
@@ -24,31 +24,31 @@ router = APIRouter(prefix="/automation", tags=["automation"])
 # ── MODELS ──
 
 class RecurringTransfer(BaseModel):
-    recipient_address: str  # 0x... or @username
-    amount_cents: int
-    frequency: str  # "daily", "weekly", "biweekly", "monthly"
+    recipient_address: str = Field(min_length=3, max_length=120)  # 0x... or @username
+    amount_cents: int = Field(ge=100, le=100_000)
+    frequency: str = Field(pattern=r"^(weekly|biweekly|monthly)$")
     start_date: datetime
     end_date: datetime = None  # None = indefinite
 
 
 class PriceAlert(BaseModel):
-    token: str  # "USDC", "USDT", "ETH", etc
-    threshold_usd: float
-    direction: str  # "above" or "below"
+    token: str = Field(min_length=2, max_length=12, pattern=r"^[A-Za-z0-9]+$")  # "USDC", "USDT", "ETH", etc
+    threshold_usd: float = Field(gt=0, le=1_000_000)
+    direction: str = Field(pattern=r"^(above|below)$")
     notify_on_change: bool = True
 
 
 class SavingsGoal(BaseModel):
-    name: str  # "Emergency Fund", "Vacation", etc
-    target_amount_cents: int
+    name: str = Field(min_length=2, max_length=60)  # "Emergency Fund", "Vacation", etc
+    target_amount_cents: int = Field(ge=100, le=10_000_000)
     target_date: datetime
-    auto_allocate_percent: float  # 0-100: auto-send this % of income
+    auto_allocate_percent: float = Field(ge=0, le=50)
 
 
 class DCAPlan(BaseModel):
-    token: str  # Token to buy
-    amount_usd: float  # Amount per cycle
-    frequency: str  # "daily", "weekly", "biweekly", "monthly"
+    token: str = Field(min_length=1, max_length=12, pattern=r"^[A-Za-z0-9]+$")  # Token to buy
+    amount_usd: float = Field(ge=1, le=1000)  # Amount per cycle
+    frequency: str = Field(pattern=r"^(weekly|biweekly|monthly)$")
     start_date: datetime
     end_date: datetime = None
 
