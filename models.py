@@ -597,6 +597,33 @@ class UserAuditLog(Base):
     )
 
 
+class RepaymentRequest(Base):
+    """A private, payer-authorized request to settle a shared expense.
+
+    This is deliberately not a credit product: creating a request never moves
+    funds, and settlement requires the payer to explicitly approve a transfer.
+    """
+    __tablename__ = "repayment_requests"
+
+    id = Column(String, primary_key=True, default=new_id)
+    requester_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    payer_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    note = Column(String(140), nullable=True)
+    due_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending | processing | paid | cancelled
+    last_reminded_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("amount_cents >= 100 AND amount_cents <= 100000"),
+        CheckConstraint("status IN ('pending', 'processing', 'paid', 'cancelled')"),
+        Index("idx_repayment_payer_status_created", "payer_id", "status", "created_at"),
+        Index("idx_repayment_requester_status_created", "requester_id", "status", "created_at"),
+    )
+
+
 class ProductMetric(Base):
     """Append-only product and reliability measurements.
 
