@@ -18,7 +18,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import func
 
 from database import get_db
 from models import User, InvestingOrder, InvestingWatchlist
@@ -29,8 +30,11 @@ from rate_limiting import limiter, RATE_LIMITS
 
 router = APIRouter(prefix="/investing", tags=["investing"])
 
-# Max position size for students (in cents)
-MAX_POSITION_SIZE_CENTS = 5_000_000  # $50,000
+# Conservative guardrails apply to every user. They are intentionally enforced
+# server-side so a modified browser cannot bypass the safety envelope.
+MAX_ORDER_NOTIONAL_CENTS = 100_000       # $1,000 per order
+DAILY_ORDER_NOTIONAL_CENTS = 250_000     # $2,500 rolling 24-hour turnover
+MAX_OPEN_ORDERS = 5
 
 
 class OpenAccountRequest(BaseModel):
@@ -49,7 +53,7 @@ class AccountOut(BaseModel):
 
 
 class OrderRequest(BaseModel):
-    symbol: str
+    symbol: str = Field(min_length=1, max_length=10, pattern=r"^[A-Za-z0-9.]+$")
     side: str = Field(pattern="^(buy|sell)$")
     notional: float | None = None  # dollar amount (fractional shares)
     qty: float | None = None        # share count
@@ -107,16 +111,37 @@ async def place_order(request: Request, req: OrderRequest,
                       current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Place a market buy/sell order for stocks, ETFs, or crypto.
 
-    Security: max $50k per order for students, rate-limited to 50 orders/hour.
+    Security: conservative order caps, quote-first UI, and rate limiting.
     """
     if not current_user.alpaca_account_id:
         raise HTTPException(status_code=400, detail="Open an investing account first.")
     req.validate_amount()
 
-    # Enforce position size limit ($50k max)
-    order_size_cents = int(req.notional * 100) if req.notional is not None else None
-    if order_size_cents and order_size_cents > MAX_POSITION_SIZE_CENTS:
-        raise HTTPException(status_code=400, detail=f"Order exceeds ${MAX_POSITION_SIZE_CENTS / 100:.0f} student limit.")
+    # Protective limits are based on notional so the server can enforce them
+    # before contacting Alpaca. Share-quantity orders are not safe to cap
+    # without a live price, so require the dollar-based fractional form.
+    if req.notional is None:
+        raise HTTPException(status_code=400, detail="Use a dollar amount for protected investing orders.")
+    order_size_cents = int(round(req.notional * 100))
+    if order_size_cents > MAX_ORDER_NOTIONAL_CENTS:
+        raise HTTPException(status_code=400, detail="Orders are limited to $1,000 each.")
+
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    daily_total = db.query(func.coalesce(func.sum(InvestingOrder.notional_cents), 0)).filter(
+        InvestingOrder.user_id == current_user.id,
+        InvestingOrder.created_at >= since,
+        InvestingOrder.status.notin_(["failed", "cancelled", "canceled"]),
+    ).scalar() or 0
+    if int(daily_total) + order_size_cents > DAILY_ORDER_NOTIONAL_CENTS:
+        remaining = max(0, DAILY_ORDER_NOTIONAL_CENTS - int(daily_total)) / 100
+        raise HTTPException(status_code=400, detail=f"24-hour investing limit reached. Remaining limit: ${remaining:.2f}.")
+
+    open_orders = db.query(InvestingOrder).filter(
+        InvestingOrder.user_id == current_user.id,
+        InvestingOrder.status.in_(["pending", "accepted", "new", "partially_filled"]),
+    ).count()
+    if open_orders >= MAX_OPEN_ORDERS:
+        raise HTTPException(status_code=400, detail="You have 5 open investing orders. Wait for one to settle before placing another.")
 
     idem = f"order:{current_user.id}:{req.symbol}:{req.side}:{req.notional or req.qty}"
     existing = db.query(InvestingOrder).filter(InvestingOrder.idempotency_key == idem).first()

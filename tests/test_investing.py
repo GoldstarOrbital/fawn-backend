@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from jose import jwt
 
 from database import SessionLocal
-from models import User
+from models import User, InvestingOrder
 from config import settings
 
 
@@ -81,6 +81,31 @@ def test_place_order_happy_path(client, monkeypatch):
     body = resp.json()
     assert body["order_id"] == "ord_1"
     assert body["symbol"] == "AAPL"
+
+
+def test_place_order_enforces_protective_per_order_limit(client):
+    user_id = _create_user(f"inv_{uuid.uuid4().hex[:8]}@example.com", alpaca_account_id="alp_limit")
+    resp = client.post("/investing/orders", headers=_auth(_token_for(user_id)),
+                       json={"symbol": "AAPL", "side": "buy", "notional": 1000.01})
+    assert resp.status_code == 400
+    assert "1,000" in resp.json()["detail"]
+
+
+def test_place_order_enforces_rolling_daily_limit(client):
+    user_id = _create_user(f"inv_{uuid.uuid4().hex[:8]}@example.com", alpaca_account_id="alp_daily")
+    db = SessionLocal()
+    try:
+        db.add(InvestingOrder(
+            user_id=user_id, symbol="SPY", side="buy", notional_cents=200_000,
+            status="accepted", idempotency_key=f"existing:{uuid.uuid4().hex}",
+        ))
+        db.commit()
+    finally:
+        db.close()
+    resp = client.post("/investing/orders", headers=_auth(_token_for(user_id)),
+                       json={"symbol": "AAPL", "side": "buy", "notional": 501})
+    assert resp.status_code == 400
+    assert "24-hour" in resp.json()["detail"]
 
 
 def test_unconfigured_provider_returns_503(client):
