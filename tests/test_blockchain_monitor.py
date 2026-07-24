@@ -318,6 +318,13 @@ async def test_rpc_client_falls_through_to_next_endpoint_on_any_json_rpc_error(m
     assert len(calls) >= 2  # actually fell through past the failing first endpoint
 
 
+def test_polygon_fallbacks_do_not_depend_on_quota_exhausted_or_keyed_endpoints():
+    endpoints = bm._get_rpc_endpoints("polygon")
+    assert "https://polygon-bor-rpc.publicnode.com" in endpoints
+    assert "https://polygon.drpc.org" in endpoints
+    assert not any("1rpc.io" in endpoint or "rpc.ankr.com" in endpoint or "polygon-rpc.com" in endpoint for endpoint in endpoints)
+
+
 @pytest.mark.asyncio
 async def test_falls_back_to_balance_diff_when_event_logs_are_unreliable(monkeypatch):
     # Reproduces a real risk found while shipping this: if eth_getLogs

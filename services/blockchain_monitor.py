@@ -6,16 +6,12 @@ seconds, and auto-credits user balances. Uses Alchemy as primary RPC per
 chain with fallback to public RPCs for resilience (DeFi-grade fault
 tolerance).
 
-NOTE on polling frequency: this was briefly tightened to 15s, which
-immediately exhausted 1rpc.io/matic's free-tier quota -- Polygon's other
-two fallback endpoints (polygon-rpc.com, rpc.ankr.com) are permanently
-broken (dead free-tier keys unrelated to us), so 1rpc.io/matic was
-already carrying 100% of Polygon's RPC traffic before the interval
-change. Reverted to 60s to stop burning that quota further. Base is
-unaffected by any of this because its FIRST endpoint (mainnet.base.org)
-works directly and never needs to fall through. Real fix for reliably
-fast Polygon polling is a working Alchemy (or similar paid-tier) API
-key -- see ALCHEMY_API_KEY in config.py / _get_rpc_endpoints() above.
+NOTE on polling frequency: Polygon monitoring stays at 60 seconds to be
+respectful of public infrastructure. The Polygon fallback list contains two
+independently operated endpoints verified for both eth_blockNumber and
+eth_getLogs; quota-gated 1RPC and endpoints that now require a private key
+are intentionally excluded. An Alchemy key remains the preferred primary
+for production volume.
 
 Detection works off ERC-20 Transfer *event logs* (eth_getLogs), not a
 balanceOf() diff -- a balance diff can only tell you the total changed, not
@@ -72,9 +68,8 @@ CHAINS = {
     "polygon": {
         "alchemy_slug": "polygon-mainnet",
         "fallback_rpcs": [
-            "https://polygon-rpc.com",
-            "https://rpc.ankr.com/polygon",
-            "https://1rpc.io/matic",
+            "https://polygon-bor-rpc.publicnode.com",
+            "https://polygon.drpc.org",
         ],
         "contracts": {
             # Native USDC (Circle-issued directly on Polygon since 2023) --
