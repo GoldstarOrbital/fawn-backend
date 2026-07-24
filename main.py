@@ -427,6 +427,34 @@ app.include_router(revenue.router)
 
 
 @app.on_event("startup")
+async def _start_price_alert_scheduler():
+    """Evaluate saved price-alert rules every five minutes.
+
+    The runner has no authority to move money. It only records threshold
+    crossings and delivers signed webhooks to a user's opted-in endpoints.
+    """
+    import asyncio
+    from services.automation_runner import run_price_alert_checks
+
+    async def _loop():
+        while True:
+            try:
+                db = SessionLocal()
+                try:
+                    result = await run_price_alert_checks(db)
+                    print(f"[automation] price alerts checked={result['checked']} triggered={result['triggered']}")
+                finally:
+                    db.close()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[automation] price-alert pass failed (will retry): {e}")
+            await asyncio.sleep(300)
+
+    asyncio.get_event_loop().create_task(_loop())
+
+
+@app.on_event("startup")
 async def _start_podcast_scheduler():
     """Daily 3:30 AM Pacific generation of the FAWN Daily Brief.
 
