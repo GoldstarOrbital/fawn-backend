@@ -1,5 +1,5 @@
 import re
-from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator, model_validator
 from typing import Optional, List
 
 # --- Auth ---
@@ -8,6 +8,9 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     full_name: str
+    # Optional for backwards-compatible API clients; the signup UI requires
+    # it and sends the user's chosen handle.
+    username: Optional[str] = None
     phone: Optional[str] = None  # Optional
     is_student: bool = True
     school: Optional[str] = None  # school key, e.g. "berkeley" — drives Campus Savings on the dashboard
@@ -27,6 +30,25 @@ class RegisterRequest(BaseModel):
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
         return v
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        if not re.fullmatch(r"[a-z0-9_]{3,30}", normalized):
+            raise ValueError("Username must be 3-30 characters using lowercase letters, numbers, or underscores")
+        return normalized
+
+    @model_validator(mode="after")
+    def password_cannot_contain_username(self):
+        if self.username:
+            password = self.password.casefold()
+            parts = [p for p in re.split(r"_+", self.username.casefold()) if len(p) >= 3]
+            if any(part in password for part in [self.username.casefold(), *parts]):
+                raise ValueError("Password cannot contain your username or a username part")
+        return self
 
     @field_validator("phone", mode="before")
     @classmethod

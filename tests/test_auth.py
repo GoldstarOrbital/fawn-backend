@@ -53,6 +53,38 @@ def test_register_assigns_username_and_profile_picture_can_change(client):
     assert remove_resp.json()["avatar_url"] is None
 
 
+def test_register_uses_requested_username(client):
+    payload = _register_payload(email="chosen-handle@example.com")
+    payload["username"] = "chosen_handle"
+    response = client.post("/auth/register", json=payload)
+    assert response.status_code == 201, response.text
+    token = response.json()["access_token"]
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.json()["username"] == "chosen_handle"
+
+
+def test_register_rejects_password_containing_username(client):
+    payload = _register_payload(email="username-password@example.com", password="blocked_handle_123")
+    payload["username"] = "blocked_handle"
+    response = client.post("/auth/register", json=payload)
+    assert response.status_code == 422
+    assert "username" in response.text.lower()
+    payload["password"] = "a_safe_password_123"
+    retry = client.post("/auth/register", json=payload)
+    assert retry.status_code == 201
+
+
+def test_register_rejects_taken_username(client):
+    first = _register_payload(email="first-handle@example.com")
+    first["username"] = "same_handle"
+    assert client.post("/auth/register", json=first).status_code == 201
+    second = _register_payload(email="second-handle@example.com")
+    second["username"] = "same_handle"
+    response = client.post("/auth/register", json=second)
+    assert response.status_code == 400
+    assert "taken" in response.json()["detail"].lower()
+
+
 def test_profile_picture_rejects_untrusted_url(client):
     register_resp = client.post("/auth/register", json=_register_payload(email="unsafe-avatar@example.com"))
     token = register_resp.json()["access_token"]

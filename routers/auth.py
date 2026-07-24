@@ -24,13 +24,20 @@ from schemas import (
 from config import settings
 from dependencies import get_current_user
 from services.crypto_wallet import create_wallet, WalletNotInitialized
-from services.username_service import assign_username_to_user
+from services.username_service import assign_username_to_user, is_valid_username
 from rate_limiting import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 RESET_LINK_EXPIRY_MINUTES = 30
 RESET_LINK_BASE = "https://goldstarorbital.github.io/fawn-landing/reset-password.html"
+
+
+def _password_contains_username(password: str, username: str) -> bool:
+    password_lower = password.casefold()
+    username_lower = username.casefold()
+    parts = [part for part in username_lower.split("_") if len(part) >= 3]
+    return any(part in password_lower for part in [username_lower, *parts])
 
 
 def _reset_token_hash(raw: str) -> str:
@@ -95,6 +102,11 @@ def _make_token(user_id: str) -> str:
 async def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(func.lower(User.email) == req.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
+    if req.username:
+        if not is_valid_username(req.username):
+            raise HTTPException(status_code=400, detail="That username is reserved or unavailable")
+        if db.query(User).filter(User.username.ilike(req.username)).first():
+            raise HTTPException(status_code=400, detail="Username already taken")
 
     user = User(
         email=req.email,
@@ -110,10 +122,15 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     db.flush()
 
     try:
-        if not assign_username_to_user(db, user):
+        if not assign_username_to_user(db, user, req.username, commit=False):
             raise RuntimeError("Unable to assign username")
+        if _password_contains_username(req.password, user.username or ""):
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Password cannot contain your username or a username part")
         db.commit()
         db.refresh(user)
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail="Registration failed. Please try again.")

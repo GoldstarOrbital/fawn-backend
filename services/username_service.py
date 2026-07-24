@@ -86,7 +86,13 @@ def generate_username(db: Session, base_name: str, max_attempts: int = 100) -> O
     return None
 
 
-def assign_username_to_user(db: Session, user: User, desired_username: Optional[str] = None) -> bool:
+def assign_username_to_user(
+    db: Session,
+    user: User,
+    desired_username: Optional[str] = None,
+    *,
+    commit: bool = True,
+) -> bool:
     """
     Assign a username to a user.
 
@@ -105,7 +111,8 @@ def assign_username_to_user(db: Session, user: User, desired_username: Optional[
             if not db.query(User).filter(User.username.ilike(desired_lower)).first():
                 user.username = desired_lower
                 _sync_handle(db, user, desired_lower)
-                db.commit()
+                if commit:
+                    db.commit()
                 return True
 
     # Generate one
