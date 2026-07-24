@@ -479,10 +479,12 @@ async def _start_price_alert_scheduler():
 async def _start_podcast_scheduler():
     """Daily 3:30 AM Pacific generation of the FAWN Daily Brief.
 
-    A plain asyncio loop instead of an external cron: sleep until the next
-    release time, generate, repeat. Safe against restarts and (unlikely)
-    multiple instances because generate_episode is idempotent per Pacific
-    date â€” the unique episode_date row is the lock.
+    A plain asyncio loop instead of an external cron. It publishes at the
+    release time, catches up after a restart, and retries any failed email
+    deliveries hourly for the rest of that release day. This runs inside
+    Railway independently of a Codex/browser session. Safe against restarts
+    and (unlikely) multiple instances because generation and successful
+    delivery records are idempotent.
     """
     import asyncio
     from services import podcast as podcast_svc
@@ -502,19 +504,20 @@ async def _start_podcast_scheduler():
     async def _loop():
         while True:
             try:
-                # Catch up immediately after a restart if today's 3:30 AM
-                # Pacific release time has passed. This is independent of any
-                # Codex/browser process and safely reuses delivery state.
+                # At/after the release time this both publishes (if needed)
+                # and retries only failed/pending email rows. Before release,
+                # wait until the scheduled time without creating tomorrow's
+                # episode early.
                 now = podcast_svc.datetime.now(podcast_svc.PACIFIC)
                 if (now.hour, now.minute) >= (podcast_svc.RELEASE_HOUR, podcast_svc.RELEASE_MINUTE):
-                    episode = await _publish_with_retry_context("startup/catch-up")
+                    episode = await _publish_with_retry_context("scheduled/retry")
                     if not episode:
                         await asyncio.sleep(300)
                         continue
-                await asyncio.sleep(podcast_svc.seconds_until_next_release())
-                episode = await _publish_with_retry_context("scheduled")
-                if not episode:
-                    await asyncio.sleep(300)
+                # Hourly same-day recovery lets a corrected mail credential
+                # drain failed deliveries without human intervention, while
+                # the delivery table prevents duplicate sends.
+                await asyncio.sleep(min(3600, podcast_svc.seconds_until_next_release(now)))
             except asyncio.CancelledError:
                 raise
             except Exception as e:
