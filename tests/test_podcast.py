@@ -109,6 +109,27 @@ def test_tts_failure_degrades_to_transcript_only(client, monkeypatch):
     assert audio.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_tts_timeout_does_not_block_transcript_publication(monkeypatch):
+    _clear_episodes()
+    async def slow_tts(_script):
+        import asyncio
+        await asyncio.sleep(1)
+        return b"late-audio"
+
+    _mock_pipeline(monkeypatch, audio=None)
+    monkeypatch.setattr(podcast_svc, "synthesize_audio", slow_tts)
+    monkeypatch.setattr(podcast_svc, "TTS_TIMEOUT_SECONDS", 0.01)
+    db = SessionLocal()
+    try:
+        episode = await podcast_svc.generate_episode(db)
+        assert episode is not None
+        assert episode.script
+        assert episode.audio_mp3 is None
+    finally:
+        db.close()
+
+
 def test_no_script_means_no_episode(client, monkeypatch):
     _clear_episodes()
     _mock_pipeline(monkeypatch, script=None)

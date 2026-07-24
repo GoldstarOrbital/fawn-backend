@@ -8,6 +8,7 @@ an MP3 -> stored as a PodcastEpisode row, one per Pacific-time date.
 Every stage degrades honestly: no Anthropic key -> no episode (we never
 publish a fake script); TTS failure -> episode publishes as transcript-only.
 """
+import asyncio
 from datetime import datetime, timedelta
 import re
 from zoneinfo import ZoneInfo
@@ -27,6 +28,7 @@ KEEP_EPISODES = 14
 
 # A clear, neutral US-English news voice from Microsoft's free edge-tts set.
 TTS_VOICE = "en-US-GuyNeural"
+TTS_TIMEOUT_SECONDS = 45
 
 SCRIPT_MODEL = "claude-sonnet-5"  # script quality matters; one call/day
 
@@ -196,7 +198,6 @@ async def generate_episode(db: Session, force: bool = False) -> PodcastEpisode |
     if not script:
         return None
 
-    audio = await synthesize_audio(script)
     word_count = len(script.split())
 
     if existing:
@@ -206,12 +207,24 @@ async def generate_episode(db: Session, force: bool = False) -> PodcastEpisode |
         db.add(episode)
     episode.title = f"FAWN Daily Brief — {datetime.now(PACIFIC).strftime('%B %d, %Y')}"
     episode.script = script
-    episode.audio_mp3 = audio
+    # Publish the transcript before optional TTS. A slow or unavailable voice
+    # provider must never hide the daily brief from the API or frontend.
+    episode.audio_mp3 = None
     episode.word_count = word_count
     episode.est_duration_seconds = int(word_count / WORDS_PER_MINUTE * 60)
     episode.source_headline_count = len(financial) + len(world)
     db.commit()
     db.refresh(episode)
+
+    try:
+        audio = await asyncio.wait_for(synthesize_audio(script), timeout=TTS_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        print(f"[podcast] TTS timed out after {TTS_TIMEOUT_SECONDS}s; transcript is already published")
+        audio = None
+    if audio:
+        episode.audio_mp3 = audio
+        db.commit()
+        db.refresh(episode)
 
     _prune_old_episodes(db)
     print(f"[podcast] episode {episode_date} ready: {word_count} words, audio={'yes' if audio else 'NO (transcript only)'}")
