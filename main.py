@@ -159,6 +159,10 @@ def _init_db_schema():
         _patch("crypto_wallets", "pending_fee_cents", "pending_fee_cents INTEGER DEFAULT 0 NOT NULL")
         _patch("crypto_wallets", "is_treasury", "is_treasury BOOLEAN DEFAULT FALSE NOT NULL")
         _patch("crypto_wallets", "key_version", "key_version VARCHAR")
+        _patch("crypto_wallets", "status", "status VARCHAR DEFAULT 'active' NOT NULL")
+        _patch("crypto_wallets", "superseded_by", "superseded_by VARCHAR")
+        _patch("crypto_wallets", "deactivated_at", "deactivated_at TIMESTAMP WITH TIME ZONE")
+        _patch("crypto_wallets", "deactivation_reason", "deactivation_reason VARCHAR")
 
         # Treasury wallet (services/crypto_wallet.py::get_or_create_treasury_wallet)
         # has no owning user, so user_id must be nullable. Idempotent:

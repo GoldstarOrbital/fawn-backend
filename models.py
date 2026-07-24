@@ -282,6 +282,12 @@ class CryptoWallet(Base):
     encrypted_private_key = Column(LargeBinary, nullable=True)  # Fernet-encrypted key (custodial only) — DEK-encrypted if key_version == "v2", else legacy direct-KEK
     wrapped_dek = Column(LargeBinary, nullable=True)  # KEK-wrapped Data Encryption Key, only set when key_version == "v2"
     key_version = Column(String, nullable=True)  # NULL/"legacy" | "v2" — see docstring above
+    # Wallet lifecycle. Legacy wallets are retained for audit/reconciliation
+    # and marked inactive after a custodial replacement is provisioned.
+    status = Column(String, nullable=False, default="active", index=True)  # active | inactive
+    superseded_by = Column(String, nullable=True, index=True)  # replacement CryptoWallet.id
+    deactivated_at = Column(DateTime(timezone=True), nullable=True)
+    deactivation_reason = Column(String, nullable=True)
     # Real USDC that stayed in THIS wallet's on-chain balance because a send
     # deducted amount+fee from the ledger but only ever moved `amount`
     # on-chain (see services/crypto_wallet.py::send_usdc). Accumulates here
