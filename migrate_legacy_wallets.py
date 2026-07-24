@@ -141,12 +141,16 @@ async def main(apply: bool, confirmation: str | None) -> int:
             return 0
         if confirmation != CONFIRMATION:
             raise SystemExit(f"Refusing apply: pass --confirm {CONFIRMATION}")
-        blocked = [row for row in report if not row["ready"]]
-        if blocked:
-            raise SystemExit("Refusing apply: reconciliation has unresolved wallets")
-
         migrated = 0
+        skipped_blocked = 0
+        ready_by_user = {row["user_id"]: row["ready"] for row in report}
         for legacy, user in _legacy_rows(db):
+            # A single unreconciled wallet must not prevent unrelated, fully
+            # reconciled accounts from receiving their replacement. It remains
+            # untouched and visible in the dry-run report for manual handling.
+            if not ready_by_user.get(user.id, False):
+                skipped_blocked += 1
+                continue
             # Idempotency guard if a previous run completed this user.
             balance = int(legacy.usdc_balance_cents or 0) if legacy else int(user.usdc_balance_cents or 0)
             pending_fee = int(legacy.pending_fee_cents or 0) if legacy else 0
@@ -188,7 +192,7 @@ async def main(apply: bool, confirmation: str | None) -> int:
             db.commit()
             migrated += 1
 
-        print(json.dumps({"migrated": migrated, "status": "complete"}, indent=2))
+        print(json.dumps({"migrated": migrated, "skipped_blocked": skipped_blocked, "status": "complete"}, indent=2))
         return 0
     finally:
         db.close()
