@@ -180,6 +180,9 @@ def build_daily_brief(episode_date: str, title: str, duration_seconds: int) -> t
     Sent daily at 3:30 AM Pacific with link to today's episode.
     """
     minutes = max(1, duration_seconds // 60)
+    # The public landing player accepts this date and fetches the matching
+    # episode. Do not link email recipients to a stale app hash route.
+    episode_url = f"https://goldstarorbital.github.io/fawn-landing/podcast/?episode={episode_date}"
     subject = f"☀️ FAWN Daily Brief — {episode_date}"
     html = f"""<html><body style="{_BASE_STYLE}">
   <h2 style="font-size:20px;margin:0 0 16px 0;">Good morning ☀️</h2>
@@ -190,7 +193,7 @@ def build_daily_brief(episode_date: str, title: str, duration_seconds: int) -> t
 
   <div style="background:#f5f5f5;padding:16px;border-radius:8px;margin:20px 0;text-align:center;">
     <p style="margin:0 0 12px 0;font-size:13px;color:#666;">📻 Listen now</p>
-    <a href="https://app.goldstarorbital.com/#daily-brief" style="display:inline-block;background:#0066cc;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">
+    <a href="{episode_url}" style="display:inline-block;background:#0066cc;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;">
       Play Daily Brief →
     </a>
     <p style="margin:12px 0 0 0;font-size:12px;color:#888;">~{minutes} min read • {episode_date}</p>

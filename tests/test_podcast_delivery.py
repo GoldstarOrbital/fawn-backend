@@ -6,6 +6,7 @@ import pytest
 from database import SessionLocal
 from models import PodcastDelivery, PodcastEpisode, User
 from services import podcast
+from email_templates import build_daily_brief
 
 
 class _Response:
@@ -24,6 +25,12 @@ class _EmailClient:
     async def post(self, *args, **kwargs):
         self.__class__.sends += 1
         return _Response()
+
+
+def test_daily_brief_email_links_to_its_landing_episode():
+    _subject, html = build_daily_brief("2026-07-24", "FAWN Daily Brief", 300)
+    assert "https://goldstarorbital.github.io/fawn-landing/podcast/?episode=2026-07-24" in html
+    assert "app.goldstarorbital.com" not in html
 
 
 @pytest.mark.asyncio
