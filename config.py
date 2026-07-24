@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     plaid_env: str = "sandbox"  # sandbox | production
     plaid_base_url: str = "https://sandbox.plaid.com"
 
+    # Card issuance (provider-gated; no card credentials means safe waitlist mode)
+    lithic_api_key: str = ""
+    lithic_base_url: str = "https://sandbox.lithic.com/v1"
+
     # ---- Buy Crypto (on-ramp aggregator) ----
     # Multi-provider fiat-to-USDC on-ramp, embedded in the Add Funds modal.
     # These are PUBLISHABLE / host keys, not secrets — safe to expose to the

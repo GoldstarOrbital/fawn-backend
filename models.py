@@ -597,6 +597,65 @@ class UserAuditLog(Base):
     )
 
 
+class ProductMetric(Base):
+    """Append-only product and reliability measurements.
+
+    Values are intentionally aggregate-friendly and contain no credentials or
+    payment account numbers. This powers the operational scorecard without
+    inventing metrics when telemetry is absent.
+    """
+    __tablename__ = "product_metrics"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey('users.id', ondelete='SET NULL'), nullable=True, index=True)
+    event_name = Column(String, nullable=False, index=True)
+    duration_ms = Column(Numeric, nullable=True)
+    success = Column(Boolean, nullable=True)
+    status_code = Column(Integer, nullable=True)
+    path = Column(String, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class UserFeedback(Base):
+    """Direct satisfaction feedback tied to an optional product context."""
+    __tablename__ = "user_feedback"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey('users.id', ondelete='SET NULL'), nullable=True, index=True)
+    score = Column(Integer, nullable=False)  # 1..5
+    comment = Column(Text, nullable=True)
+    context = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SupportTicket(Base):
+    """User support and dispute queue with measurable resolution timestamps."""
+    __tablename__ = "support_tickets"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey('users.id', ondelete='SET NULL'), nullable=True, index=True)
+    category = Column(String, nullable=False)  # transfer | funding | card | dispute | account | other
+    subject = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="open", index=True)  # open | in_progress | resolved
+    priority = Column(String, nullable=False, default="normal")
+    resolution_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class CardRequest(Base):
+    """Card interest/request record until a regulated issuer is configured."""
+    __tablename__ = "card_requests"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)
+    status = Column(String, nullable=False, default="interest")  # interest | pending_provider | active
+    card_type = Column(String, nullable=False, default="virtual_debit")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class CryptoTrade(Base):
     """A cryptocurrency token swap trade via Uniswap on Polygon.
 

@@ -14,7 +14,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, podcast, money_review, investing, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, podcast, money_review, investing, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade, experience
 from config import settings
 from logging_config import configure_logging
 
@@ -355,6 +355,35 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def record_transfer_reliability(request: Request, call_next):
+    """Measure transfer outcomes without putting telemetry on the hot path."""
+    started = time.perf_counter()
+    response = await call_next(request)
+    if request.method == "POST" and request.url.path in {
+        "/transfers/send", "/transfers/send-unified", "/transfers/send-to-bank",
+    }:
+        from services.product_metrics import record_metric
+        from jose import jwt, JWTError
+        user_id = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            try:
+                payload = jwt.decode(auth_header[7:], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+                user_id = payload.get("sub")
+            except JWTError:
+                pass
+        db = SessionLocal()
+        try:
+            record_metric(db, "transfer_succeeded" if response.status_code < 400 else "transfer_failed",
+                          user_id=user_id, success=response.status_code < 400,
+                          status_code=response.status_code, path=request.url.path,
+                          duration_ms=round((time.perf_counter() - started) * 1000, 2))
+        finally:
+            db.close()
+    return response
+
+
 app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(transactions.router)
@@ -371,6 +400,7 @@ app.include_router(podcast.router)
 app.include_router(money_review.router)
 app.include_router(investing.router)
 app.include_router(snaptrade.router)
+app.include_router(experience.router)
 app.include_router(plaid_link.router)
 app.include_router(onramp.router)
 

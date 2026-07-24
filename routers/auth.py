@@ -129,6 +129,8 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
             raise HTTPException(status_code=400, detail="Password cannot contain your username or a username part")
         db.commit()
         db.refresh(user)
+        from services.product_metrics import record_metric
+        record_metric(db, "onboarding_completed", user_id=user.id, success=True, path="/auth/register")
     except HTTPException:
         raise
     except Exception as e:
