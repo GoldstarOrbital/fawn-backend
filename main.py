@@ -68,6 +68,10 @@ def _init_db_schema():
         _patch("waitlist", "source", "source VARCHAR")
         _patch("waitlist", "referral_code", "referral_code VARCHAR")
         _patch("waitlist", "name", "name VARCHAR")
+        _patch("waitlist", "school", "school VARCHAR")
+        _patch("waitlist", "marketing_opt_in", "marketing_opt_in BOOLEAN DEFAULT FALSE NOT NULL")
+        _patch("waitlist", "consent_at", "consent_at TIMESTAMP WITH TIME ZONE")
+        _patch("waitlist", "unsubscribed_at", "unsubscribed_at TIMESTAMP WITH TIME ZONE")
 
         # founding_members columns
         _patch("founding_members", "refunded", "refunded BOOLEAN DEFAULT FALSE NOT NULL")

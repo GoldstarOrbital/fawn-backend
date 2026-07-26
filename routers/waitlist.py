@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+from datetime import datetime, timezone
+from jose import JWTError, jwt
 import os
 import httpx
 
@@ -22,6 +24,20 @@ class WaitlistJoin(BaseModel):
     name: Optional[str] = None
     source: Optional[str] = "landing"
     referral_code: Optional[str] = None  # ?ref= param from landing page
+    school: Optional[str] = None
+    marketing_opt_in: bool = False
+
+
+def _unsubscribe_token(email: str) -> str:
+    return jwt.encode(
+        {"sub": email, "purpose": "waitlist_unsubscribe"},
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
+def _unsubscribe_url(email: str) -> str:
+    return "https://web-production-13d5b.up.railway.app/waitlist/unsubscribe?token=" + _unsubscribe_token(email)
 
 
 def _send_welcome_email(email: str, position: int) -> bool:
@@ -72,6 +88,7 @@ def _send_welcome_email(email: str, position: int) -> bool:
               <p style="margin:0;font-size:13px;color:#444;">
                 FAWN · You're receiving this because you joined our waitlist.
               </p>
+              <p style="margin:8px 0 0;font-size:12px;color:#444;"><a href="{_unsubscribe_url(email)}" style="color:#777;">Unsubscribe from updates</a></p>
             </td>
           </tr>
         </table>
@@ -112,23 +129,47 @@ def _send_welcome_email(email: str, position: int) -> bool:
 def join_waitlist(request: Request, req: WaitlistJoin, db: Session = Depends(get_db)):
     existing = db.query(WaitlistEntry).filter(WaitlistEntry.email == req.email).first()
     if existing:
+        if req.marketing_opt_in and not existing.marketing_opt_in:
+            existing.marketing_opt_in = True
+            existing.consent_at = datetime.now(timezone.utc)
+            existing.unsubscribed_at = None
+            db.commit()
         return {"message": "You're already on the list!", "position": _position(db, existing)}
 
     entry = WaitlistEntry(
         email=req.email,
         name=req.name,
+        school=req.school,
         source=req.source,
         referral_code=req.referral_code,
+        marketing_opt_in=req.marketing_opt_in,
+        consent_at=datetime.now(timezone.utc) if req.marketing_opt_in else None,
     )
     db.add(entry)
     db.commit()
     db.refresh(entry)
     position = db.query(WaitlistEntry).count()
-    if _send_welcome_email(req.email, position):
+    if req.marketing_opt_in and _send_welcome_email(req.email, position):
         db.add(EmailLog(email=req.email, email_number=WELCOME_EMAIL_NUMBER))
         db.commit()
     capture(EVENTS["WAITLIST_JOINED"], req.email, {"position": position, "source": req.source})
     return {"message": "You're on the list!", "position": position}
+
+
+@router.get("/unsubscribe")
+def unsubscribe(token: str, db: Session = Depends(get_db)):
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        if payload.get("purpose") != "waitlist_unsubscribe" or not payload.get("sub"):
+            raise JWTError()
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid unsubscribe link")
+    entry = db.query(WaitlistEntry).filter(WaitlistEntry.email == payload["sub"]).first()
+    if entry:
+        entry.marketing_opt_in = False
+        entry.unsubscribed_at = datetime.now(timezone.utc)
+        db.commit()
+    return {"message": "You have been unsubscribed from FAWN marketing updates."}
 
 
 @router.get("/count")

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timezone, timedelta
 import httpx
+from jose import jwt
 
 from database import get_db
 from models import WaitlistEntry, EmailLog
@@ -114,7 +115,7 @@ def process_nurture(
             ),
         }
         for e in raw_entries
-        if e.created_at is not None
+        if e.created_at is not None and e.marketing_opt_in and not e.unsubscribed_at
     ]
 
     sent_count = 0
@@ -136,6 +137,15 @@ def process_nurture(
 
             name = entry_name or email_addr.split("@")[0]
             subject, html = step["build_fn"](name)
+            unsubscribe_url = "https://web-production-13d5b.up.railway.app/waitlist/unsubscribe?token=" + jwt.encode(
+                {"sub": email_addr, "purpose": "waitlist_unsubscribe"},
+                settings.jwt_secret,
+                algorithm=settings.jwt_algorithm,
+            )
+            html = html.replace(
+                "</body>",
+                f"<p style='font-size:12px;color:#888;text-align:center;'><a href='{unsubscribe_url}' style='color:#888;'>Unsubscribe from FAWN updates</a></p></body>",
+            )
 
             if using_test_domain:
                 subject = f"[TO: {email_addr}] {subject}"
@@ -184,7 +194,12 @@ def resend_welcome_backfill(
     Idempotent via EmailLog(email_number=1) — safe to call more than once;
     already-confirmed entries are always skipped.
     """
-    entries = db.query(WaitlistEntry).order_by(WaitlistEntry.created_at.asc()).all()
+    entries = (
+        db.query(WaitlistEntry)
+        .filter(WaitlistEntry.marketing_opt_in.is_(True), WaitlistEntry.unsubscribed_at.is_(None))
+        .order_by(WaitlistEntry.created_at.asc())
+        .all()
+    )
 
     sent_count = 0
     skipped_count = 0

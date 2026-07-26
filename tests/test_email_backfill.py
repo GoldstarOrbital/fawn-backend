@@ -10,7 +10,7 @@ from models import WaitlistEntry, EmailLog
 def _add_waitlist_entry(email):
     db = SessionLocal()
     try:
-        db.add(WaitlistEntry(email=email, source="test"))
+        db.add(WaitlistEntry(email=email, source="test", marketing_opt_in=True))
         db.commit()
     finally:
         db.close()

@@ -53,8 +53,12 @@ class WaitlistEntry(Base):
     id = Column(String, primary_key=True, default=new_id)
     email = Column(String, unique=True, nullable=False, index=True)
     name = Column(String, nullable=True)
+    school = Column(String, nullable=True, index=True)
     source = Column(String, nullable=True, default="landing")
     referral_code = Column(String, nullable=True)  # referral code used when joining
+    marketing_opt_in = Column(Boolean, nullable=False, default=False)
+    consent_at = Column(DateTime(timezone=True), nullable=True)
+    unsubscribed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
