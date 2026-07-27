@@ -9,7 +9,7 @@ SECURITY:
 - No seed phrases logged, returned only once
 - Error messages do not leak sensitive data
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Header
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, validator
 from database import get_db
@@ -335,6 +335,7 @@ async def send_usdc(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     """
     Send USDC from user's wallet to a recipient.
@@ -351,6 +352,7 @@ async def send_usdc(
             amount_cents=req.amount_cents,
             db=db,
             memo=req.memo,
+            idempotency_key=idempotency_key,
         )
         capture(EVENTS["TRANSFER_SENT"], user_id, {"amount_cents": req.amount_cents})
         return result
@@ -383,6 +385,7 @@ async def send_to_user_or_wallet(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     """
     Send USDC to either a FAWN user (by username) or external wallet address.
@@ -437,6 +440,7 @@ async def send_to_user_or_wallet(
             db=db,
             memo=req.memo,
             is_internal=is_internal,
+            idempotency_key=idempotency_key,
         )
         capture(EVENTS["TRANSFER_SENT"], user_id, {
             "amount_cents": req.amount_cents,

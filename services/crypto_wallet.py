@@ -583,6 +583,7 @@ async def send_usdc(
     db: Session,
     memo: str = None,
     is_internal: bool = False,
+    idempotency_key: str | None = None,
 ) -> dict:
     """
     Send USDC from sender to recipient, settled with a real on-chain
@@ -648,6 +649,25 @@ async def send_usdc(
     if not sender or not sender.crypto_wallet_address:
         raise WalletNotInitialized(f"Sender {sender_id} has no stablecoin wallet")
 
+    if idempotency_key:
+        idempotency_key = idempotency_key.strip()
+        if len(idempotency_key) > 120:
+            raise InvalidAddress("Idempotency-Key is too long")
+        existing = db.query(CryptoTransfer).filter(
+            CryptoTransfer.idempotency_key == idempotency_key
+        ).first()
+        if existing:
+            return {
+                "transfer_id": existing.id,
+                "amount": existing.amount_cents / 100.0,
+                "fee": existing.fee_cents / 100.0,
+                "total_debited": (existing.amount_cents + existing.fee_cents) / 100.0,
+                "status": existing.status,
+                "chain": existing.chain,
+                "tx_hash": existing.tx_hash,
+                "created_at": existing.created_at.isoformat() if existing.created_at else None,
+            }
+
     # Determine fee based on transfer type
     fee_cents = INTERNAL_TRANSFER_FEE_CENTS if is_internal else EXTERNAL_TRANSFER_FEE_CENTS
 
@@ -661,6 +681,87 @@ async def send_usdc(
             f"Insufficient balance. Have: ${sender.usdc_balance_cents / 100:.2f}, "
             f"need: ${total_needed / 100:.2f} (transfer + {fee_display} fee)"
         )
+
+    # FAWN-to-FAWN payments settle in the custodial ledger. This is the
+    # pilot's fast path: no gas sponsorship, RPC confirmation, or monitor
+    # polling is required, and the recipient sees the funds immediately.
+    # External wallet sends continue through the on-chain settlement path.
+    recipient_user = None
+    if is_internal:
+        recipient_user = db.query(User).filter(
+            User.crypto_wallet_address.ilike(recipient_address),
+            User.wallet_initialized.is_(True),
+        ).first()
+    if is_internal and recipient_user:
+        if recipient_user.id == sender_id:
+            raise InvalidAddress("You can't send money to yourself")
+
+        transfer = CryptoTransfer(
+            sender_id=sender_id,
+            recipient_user_id=recipient_user.id,
+            recipient_address=recipient_address,
+            idempotency_key=idempotency_key,
+            amount_cents=amount_cents,
+            fee_cents=fee_cents,
+            status="completed",
+            chain="internal",
+            memo=memo,
+            completed_at=datetime.utcnow(),
+        )
+        sender.usdc_balance_cents -= total_needed
+        sender.total_fees_paid_cents += fee_cents
+        recipient_user.usdc_balance_cents += amount_cents
+
+        sender_wallet = db.query(CryptoWallet).filter(
+            CryptoWallet.user_id == sender_id,
+            CryptoWallet.status == "active",
+        ).first()
+        recipient_wallet = db.query(CryptoWallet).filter(
+            CryptoWallet.user_id == recipient_user.id,
+            CryptoWallet.status == "active",
+        ).first()
+        if sender_wallet:
+            sender_wallet.usdc_balance_cents = sender.usdc_balance_cents
+            sender_wallet.pending_fee_cents += fee_cents
+        if recipient_wallet:
+            recipient_wallet.usdc_balance_cents = recipient_user.usdc_balance_cents
+
+        retention_expires = datetime.now(tz=timezone.utc) + timedelta(days=365 * 7)
+        db.add(transfer)
+        db.add(UserAuditLog(
+            user_id=sender_id,
+            action="sent_transfer",
+            details=json.dumps({
+                "transfer_id": transfer.id,
+                "recipient_user_id": recipient_user.id,
+                "amount_cents": amount_cents,
+                "fee_cents": fee_cents,
+                "transfer_type": "internal",
+            }),
+            retention_expires_at=retention_expires,
+        ))
+        db.add(UserAuditLog(
+            user_id=recipient_user.id,
+            action="received_transfer",
+            details=json.dumps({
+                "transfer_id": transfer.id,
+                "sender_user_id": sender_id,
+                "amount_cents": amount_cents,
+                "transfer_type": "internal",
+            }),
+            retention_expires_at=retention_expires,
+        ))
+        db.commit()
+        return {
+            "transfer_id": transfer.id,
+            "amount": amount_cents / 100.0,
+            "fee": fee_cents / 100.0,
+            "total_debited": total_needed / 100.0,
+            "status": "completed",
+            "chain": "internal",
+            "tx_hash": None,
+            "created_at": transfer.created_at.isoformat() if transfer.created_at else None,
+        }
 
     from services.address_risk import flag_if_risky_for_review
 
@@ -692,6 +793,7 @@ async def send_usdc(
         transfer = CryptoTransfer(
             sender_id=sender_id,
             recipient_address=recipient_address,
+            idempotency_key=idempotency_key,
             amount_cents=amount_cents,
             fee_cents=fee_cents,
             status="pending_review",
@@ -731,6 +833,7 @@ async def send_usdc(
     transfer = CryptoTransfer(
         sender_id=sender_id,
         recipient_address=recipient_address,
+        idempotency_key=idempotency_key,
         amount_cents=amount_cents,
         fee_cents=fee_cents,
         status="completed",
@@ -822,16 +925,17 @@ async def get_transfer_history(user_id: str, db: Session, limit: int = 50) -> li
         raise ValueError(f"User {user_id} not found")
 
     transfers = db.query(CryptoTransfer).filter(
-        CryptoTransfer.sender_id == user_id
+        (CryptoTransfer.sender_id == user_id) |
+        (CryptoTransfer.recipient_user_id == user_id)
     ).order_by(CryptoTransfer.created_at.desc()).limit(limit).all()
 
     return [
         {
             "transfer_id": t.id,
-            "type": "send",
+            "type": "receive" if t.recipient_user_id == user_id else "send",
             "amount": t.amount_cents / 100.0,
-            "fee": t.fee_cents / 100.0,
-            "counterparty": t.recipient_address,
+            "fee": 0.0 if t.recipient_user_id == user_id else t.fee_cents / 100.0,
+            "counterparty": t.recipient_address if t.recipient_user_id != user_id else (t.sender_id or ""),
             "status": t.status,
             "memo": t.memo,
             "created_at": t.created_at.isoformat() if t.created_at else None,

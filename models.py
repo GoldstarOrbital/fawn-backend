@@ -397,7 +397,9 @@ class CryptoTransfer(Base):
 
     id = Column(String, primary_key=True, default=new_id)
     sender_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    recipient_user_id = Column(String, ForeignKey('users.id', ondelete='CASCADE'), nullable=True, index=True)
     recipient_address = Column(String, nullable=False, index=True)
+    idempotency_key = Column(String, nullable=True, unique=True, index=True)
     amount_cents = Column(Integer, nullable=False)
     fee_cents = Column(Integer, default=100, nullable=False)
     status = Column(String, default="completed", nullable=False, index=True)

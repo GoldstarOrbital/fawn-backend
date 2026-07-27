@@ -92,6 +92,20 @@ def _init_db_schema():
         _patch("users", "location", "location VARCHAR")
         _patch("users", "military_status", "military_status VARCHAR")
 
+        # Internal FAWN-to-FAWN transfers record the recipient user so the
+        # receiving account can show the payment immediately from the same
+        # ledger, without waiting for an on-chain monitor cycle.
+        _patch("crypto_transfers", "recipient_user_id", "recipient_user_id VARCHAR")
+        _patch("crypto_transfers", "idempotency_key", "idempotency_key VARCHAR")
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_crypto_transfer_idempotency "
+                    "ON crypto_transfers (idempotency_key) WHERE idempotency_key IS NOT NULL"
+                ))
+        except Exception as e:
+            print(f"[startup] crypto transfer idempotency index patch skipped/failed: {e}")
+
         # Alpaca is the one remaining third-party account id on User
         # (investing) — Plaid's link data lives on its own PlaidItem table.
         _patch("users", "alpaca_account_id", "alpaca_account_id VARCHAR")
