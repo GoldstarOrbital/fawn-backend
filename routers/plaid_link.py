@@ -75,19 +75,21 @@ async def exchange(req: ExchangeRequest, current_user: User = Depends(get_curren
             # the linked item by replaying a public token.
             raise HTTPException(status_code=409, detail="This bank connection is already linked to another FAWN account.")
         # Re-linking the same institution — refresh the token, keep one row.
-        existing.access_token = exchanged["access_token"]
+        existing.access_token = plaid_svc.encrypt_access_token(exchanged["access_token"])
         existing.status = "active"
         db.commit()
         item = existing
     else:
         item = PlaidItem(user_id=current_user.id, item_id=item_id,
-                         access_token=exchanged["access_token"])
+                         access_token=plaid_svc.encrypt_access_token(exchanged["access_token"]))
         db.add(item)
         db.commit()
 
     # Best-effort enrich display metadata; never fail the link on this.
     try:
-        auth = await plaid_svc.get_auth(item.access_token)
+        # Use the raw token only in memory for the provider call; the database
+        # row contains the encrypted-at-rest representation.
+        auth = await plaid_svc.get_auth(exchanged["access_token"])
         item.account_mask = auth.get("mask") or auth.get("account_number", "")[-4:]
         item.institution_name = auth.get("account_name", "")
         db.commit()

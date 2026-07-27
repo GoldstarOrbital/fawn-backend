@@ -22,8 +22,10 @@ Guarded by _require_configured(): unset client_id/secret raises.
 """
 from __future__ import annotations
 
+import os
 import httpx
 from config import settings
+from cryptography.fernet import Fernet, InvalidToken
 
 
 class PlaidNotConfigured(RuntimeError):
@@ -35,6 +37,30 @@ class PlaidError(RuntimeError):
         self.status_code = status_code
         self.body = body
         super().__init__(f"Plaid API {status_code}: {body[:300]}")
+
+
+def _encryption_key() -> str:
+    key = settings.fawn_encryption_key or os.environ.get("FAWN_ENCRYPTION_KEY", "")
+    if not key:
+        raise PlaidNotConfigured("FAWN_ENCRYPTION_KEY is required to store bank-link credentials securely.")
+    return key
+
+
+def encrypt_access_token(access_token: str) -> str:
+    """Encrypt a long-lived Plaid token before it enters the database."""
+    if not access_token:
+        raise PlaidError(502, "Plaid returned an empty access token")
+    return "v1:" + Fernet(_encryption_key()).encrypt(access_token.encode()).decode()
+
+
+def decrypt_access_token(stored_token: str) -> str:
+    """Decrypt current tokens; accept legacy plaintext rows for migration."""
+    if not stored_token.startswith("v1:"):
+        return stored_token
+    try:
+        return Fernet(_encryption_key()).decrypt(stored_token[3:].encode()).decode()
+    except InvalidToken as exc:
+        raise PlaidError(500, "Stored Plaid credential could not be decrypted") from exc
 
 
 def _require_configured() -> None:

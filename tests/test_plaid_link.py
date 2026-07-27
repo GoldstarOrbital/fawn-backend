@@ -7,6 +7,7 @@ from jose import jwt
 from database import SessionLocal
 from models import User, PlaidItem
 from config import settings
+from services import plaid as plaid_svc
 
 
 def _create_user(email):
@@ -63,7 +64,9 @@ def test_exchange_persists_item(client, monkeypatch):
     try:
         row = db.query(PlaidItem).filter(PlaidItem.item_id == item_id).first()
         assert row is not None
-        assert row.access_token == "access-secret-xyz"  # stored server-side only
+        assert row.access_token != "access-secret-xyz"
+        assert row.access_token.startswith("v1:")
+        assert plaid_svc.decrypt_access_token(row.access_token) == "access-secret-xyz"
     finally:
         db.close()
 
@@ -131,6 +134,6 @@ def test_exchange_cannot_reassign_item_to_another_user(client, monkeypatch):
     try:
         row = db.query(PlaidItem).filter(PlaidItem.item_id == item_id).one()
         assert row.user_id == first_id
-        assert row.access_token == "secret-1"
+        assert plaid_svc.decrypt_access_token(row.access_token) == "secret-1"
     finally:
         db.close()
