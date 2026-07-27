@@ -49,7 +49,7 @@ def test_exchange_persists_item(client, monkeypatch):
         return {"access_token": "access-secret-xyz", "item_id": item_id}
 
     async def fake_auth(access_token):
-        return {"mask": "4321", "account_name": "Test Checking", "account_number": "000004321"}
+        return {"mask": "4321", "account_name": "Test Checking", "account_number": "000004321", "account_id": "acct_test_1"}
 
     monkeypatch.setattr("routers.plaid_link.plaid_svc.exchange_public_token", fake_exchange)
     monkeypatch.setattr("routers.plaid_link.plaid_svc.get_auth", fake_auth)
@@ -64,6 +64,7 @@ def test_exchange_persists_item(client, monkeypatch):
     try:
         row = db.query(PlaidItem).filter(PlaidItem.item_id == item_id).first()
         assert row is not None
+        assert row.account_id == "acct_test_1"
         assert row.access_token != "access-secret-xyz"
         assert row.access_token.startswith("v1:")
         assert plaid_svc.decrypt_access_token(row.access_token) == "access-secret-xyz"
@@ -117,14 +118,14 @@ def test_exchange_cannot_reassign_item_to_another_user(client, monkeypatch):
         return {"access_token": f"secret-{calls['n']}", "item_id": item_id}
 
     async def fake_auth(access_token):
-        return {"mask": "4321", "account_name": "Test Checking", "account_number": "000004321"}
+        return {"mask": "4321", "account_name": "Test Checking", "account_number": "000004321", "account_id": "acct_test_1"}
 
     monkeypatch.setattr("routers.plaid_link.plaid_svc.exchange_public_token", fake_exchange)
     monkeypatch.setattr("routers.plaid_link.plaid_svc.get_auth", fake_auth)
 
     first_id = _create_user(f"pl_owner_{uuid.uuid4().hex[:8]}@example.com")
     second_id = _create_user(f"pl_other_{uuid.uuid4().hex[:8]}@example.com")
-    first = client.post("/plaid/exchange", headers=_auth(_token_for(first_id)), json={"public_token": "public-1"})
+    first = client.post("/plaid/exchange", headers=_auth(_token_for(first_id)), json={"public_token": "public-1", "account_id": "acct_owner"})
     assert first.status_code == 201
 
     second = client.post("/plaid/exchange", headers=_auth(_token_for(second_id)), json={"public_token": "public-2"})
@@ -134,6 +135,7 @@ def test_exchange_cannot_reassign_item_to_another_user(client, monkeypatch):
     try:
         row = db.query(PlaidItem).filter(PlaidItem.item_id == item_id).one()
         assert row.user_id == first_id
+        assert row.account_id == "acct_owner"
         assert plaid_svc.decrypt_access_token(row.access_token) == "secret-1"
     finally:
         db.close()

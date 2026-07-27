@@ -251,6 +251,7 @@ class PlaidItem(Base):
     id = Column(String, primary_key=True, default=new_id)
     user_id = Column(String, nullable=False, index=True)
     item_id = Column(String, nullable=False, unique=True, index=True)  # Plaid item id
+    account_id = Column(String, nullable=True, index=True)  # Selected Plaid account id; not a bank secret
     access_token = Column(String, nullable=False)  # Plaid access_token (secret)
     institution_name = Column(String, nullable=True)
     account_mask = Column(String, nullable=True)   # last 4 of linked account

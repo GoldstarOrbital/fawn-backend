@@ -24,6 +24,7 @@ router = APIRouter(prefix="/plaid", tags=["plaid"])
 
 class ExchangeRequest(BaseModel):
     public_token: str
+    account_id: str | None = None
 
 
 def _svc_error(e: Exception) -> HTTPException:
@@ -67,6 +68,7 @@ async def exchange(req: ExchangeRequest, current_user: User = Depends(get_curren
         raise _svc_error(e)
 
     item_id = exchanged["item_id"]
+    selected_account_id = req.account_id
     existing = db.query(PlaidItem).filter(PlaidItem.item_id == item_id).first()
     if existing:
         if existing.user_id != current_user.id:
@@ -76,11 +78,13 @@ async def exchange(req: ExchangeRequest, current_user: User = Depends(get_curren
             raise HTTPException(status_code=409, detail="This bank connection is already linked to another FAWN account.")
         # Re-linking the same institution — refresh the token, keep one row.
         existing.access_token = plaid_svc.encrypt_access_token(exchanged["access_token"])
+        existing.account_id = selected_account_id or existing.account_id
         existing.status = "active"
         db.commit()
         item = existing
     else:
         item = PlaidItem(user_id=current_user.id, item_id=item_id,
+                         account_id=selected_account_id,
                          access_token=plaid_svc.encrypt_access_token(exchanged["access_token"]))
         db.add(item)
         db.commit()
@@ -90,6 +94,8 @@ async def exchange(req: ExchangeRequest, current_user: User = Depends(get_curren
         # Use the raw token only in memory for the provider call; the database
         # row contains the encrypted-at-rest representation.
         auth = await plaid_svc.get_auth(exchanged["access_token"])
+        if not item.account_id:
+            item.account_id = auth.get("account_id") or None
         item.account_mask = auth.get("mask") or auth.get("account_number", "")[-4:]
         item.institution_name = auth.get("account_name", "")
         db.commit()

@@ -92,6 +92,10 @@ def _init_db_schema():
         _patch("users", "location", "location VARCHAR")
         _patch("users", "military_status", "military_status VARCHAR")
 
+        # Plaid account selection. Persist only Plaid's opaque account id;
+        # routing/account numbers remain provider-side and are never stored.
+        _patch("plaid_items", "account_id", "account_id VARCHAR")
+
         # Internal FAWN-to-FAWN transfers record the recipient user so the
         # receiving account can show the payment immediately from the same
         # ledger, without waiting for an on-chain monitor cycle.
