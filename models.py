@@ -47,6 +47,22 @@ class User(Base):
     referral_count = Column(Integer, default=0, nullable=False)
 
 
+class SocialIdentity(Base):
+    """A verified Google or Apple identity linked to one FAWN account."""
+    __tablename__ = "social_identities"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    provider = Column(String, nullable=False)  # google | apple
+    subject = Column(String, nullable=False)
+    email = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("uq_social_identity_provider_subject", "provider", "subject", unique=True),
+    )
+
+
 class WaitlistEntry(Base):
     __tablename__ = "waitlist"
 

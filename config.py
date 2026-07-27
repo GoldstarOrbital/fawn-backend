@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     plaid_env: str = "sandbox"  # sandbox | production
     plaid_base_url: str = "https://sandbox.plaid.com"
 
+    # Social sign-in. These are provider application identifiers; secrets
+    # remain server-side and are never exposed to the static frontend.
+    google_oauth_client_id: str = ""
+    apple_oauth_client_id: str = ""
+
     # Card issuance (provider-gated; no card credentials means safe waitlist mode)
     lithic_api_key: str = ""
     lithic_base_url: str = "https://sandbox.lithic.com/v1"

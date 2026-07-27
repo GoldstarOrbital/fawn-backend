@@ -8,10 +8,10 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
-from jose import jwt
+from jose import jwt, jwk
 import bcrypt
 from database import get_db
-from models import User, PasswordResetToken
+from models import User, PasswordResetToken, SocialIdentity
 from schemas import (
     RegisterRequest,
     LoginRequest,
@@ -21,6 +21,7 @@ from schemas import (
     ResetPasswordRequest,
     ChangePasswordRequest,
     UpdateMeRequest,
+    SocialLoginRequest,
 )
 from config import settings
 from dependencies import get_current_user
@@ -96,6 +97,76 @@ def _make_token(user_id: str) -> str:
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
+
+
+async def _verify_social_token(provider: str, raw_token: str) -> dict:
+    """Verify a provider-signed ID token and return only trusted claims."""
+    if not raw_token or len(raw_token) > 16_000:
+        raise HTTPException(status_code=400, detail="Invalid social sign-in token")
+    if provider == "google":
+        issuer = "https://accounts.google.com"
+        audience = settings.google_oauth_client_id
+        jwks_url = "https://www.googleapis.com/oauth2/v3/certs"
+    else:
+        issuer = "https://appleid.apple.com"
+        audience = settings.apple_oauth_client_id
+        jwks_url = "https://appleid.apple.com/auth/keys"
+    if not audience:
+        raise HTTPException(status_code=503, detail=f"{provider.title()} sign-in is not configured yet")
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            jwks = (await client.get(jwks_url)).json().get("keys", [])
+        header = jwt.get_unverified_header(raw_token)
+        key_data = next((key for key in jwks if key.get("kid") == header.get("kid")), None)
+        if not key_data:
+            raise ValueError("Unknown signing key")
+        claims = jwt.decode(raw_token, jwk.construct(key_data), algorithms=["RS256"], audience=audience, issuer=issuer)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Social sign-in could not be verified")
+    email = (claims.get("email") or "").strip().lower()
+    subject = str(claims.get("sub") or "")
+    if not email or not subject or claims.get("email_verified") not in (True, "true"):
+        raise HTTPException(status_code=401, detail="A verified email is required for social sign-in")
+    return {"email": email, "subject": subject, "full_name": claims.get("name") or claims.get("email", "").split("@")[0], "avatar_url": claims.get("picture")}
+
+
+@router.post("/social", response_model=TokenResponse)
+@limiter.limit("10/minute")
+async def social_login(request: Request, req: SocialLoginRequest, db: Session = Depends(get_db)):
+    """Sign in or create an account from a verified Google/Apple ID token.
+
+    A new social account must still choose a unique FAWN username. Existing
+    password accounts with the same verified email may sign in, but the social
+    identity is linked only after that email match is established.
+    """
+    claims = await _verify_social_token(req.provider, req.id_token)
+    identity = db.query(SocialIdentity).filter(
+        SocialIdentity.provider == req.provider,
+        SocialIdentity.subject == claims["subject"],
+    ).first()
+    if identity:
+        return TokenResponse(access_token=_make_token(identity.user_id))
+
+    user = db.query(User).filter(func.lower(User.email) == claims["email"]).first()
+    if not user:
+        if not req.username:
+            raise HTTPException(status_code=409, detail="Choose a username to finish creating your FAWN account")
+        if not is_valid_username(req.username) or db.query(User).filter(User.username.ilike(req.username)).first():
+            raise HTTPException(status_code=400, detail="That username is unavailable")
+        user = User(
+            email=claims["email"], hashed_password=_hash(secrets.token_urlsafe(32)),
+            full_name=(req.full_name or claims["full_name"])[:200], is_student=req.is_student,
+            school=req.school, avatar_url=claims.get("avatar_url"),
+        )
+        db.add(user)
+        db.flush()
+        if not assign_username_to_user(db, user, req.username, commit=False):
+            db.rollback()
+            raise HTTPException(status_code=400, detail="That username is unavailable")
+        await create_wallet(user.id, db, wallet_type="fawn_custodial")
+    db.add(SocialIdentity(user_id=user.id, provider=req.provider, subject=claims["subject"], email=claims["email"]))
+    db.commit()
+    return TokenResponse(access_token=_make_token(user.id))
 
 
 @router.post("/register", response_model=TokenResponse, status_code=201)

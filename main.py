@@ -92,6 +92,10 @@ def _init_db_schema():
         _patch("users", "location", "location VARCHAR")
         _patch("users", "military_status", "military_status VARCHAR")
 
+        # Google/Apple verified identities used for passwordless sign-in.
+        # create_all handles new installs; this is only a safety note for
+        # existing deployments where the table is created during boot.
+
         # Plaid account selection. Persist only Plaid's opaque account id;
         # routing/account numbers remain provider-side and are never stored.
         _patch("plaid_items", "account_id", "account_id VARCHAR")

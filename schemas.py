@@ -105,6 +105,33 @@ class LoginRequest(BaseModel):
     def normalize_email(cls, v: str) -> str:
         return v.lower()
 
+
+class SocialLoginRequest(BaseModel):
+    provider: str
+    id_token: str
+    username: Optional[str] = None
+    full_name: Optional[str] = None
+    is_student: bool = True
+    school: Optional[str] = None
+
+    @field_validator("provider")
+    @classmethod
+    def supported_provider(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in {"google", "apple"}:
+            raise ValueError("Provider must be google or apple")
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip().lower()
+        if not re.fullmatch(r"[a-z0-9_]{3,30}", normalized):
+            raise ValueError("Username must be 3-30 characters using lowercase letters, numbers, or underscores")
+        return normalized
+
 class UpdateMeRequest(BaseModel):
     school: Optional[str] = None
     location: Optional[str] = None
