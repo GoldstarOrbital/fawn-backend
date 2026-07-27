@@ -88,6 +88,25 @@ async def test_each_user_receives_a_distinct_wallet_and_balance_scope():
 
 
 @pytest.mark.asyncio
+async def test_balance_read_reconciles_stale_wallet_mirror_from_canonical_ledger():
+    db = SessionLocal()
+    try:
+        user = _make_bare_user(db)
+        result = await crypto_wallet.create_wallet(user.id, db)
+        wallet = db.query(CryptoWallet).filter(CryptoWallet.user_id == user.id).one()
+        user.usdc_balance_cents = 4321
+        wallet.usdc_balance_cents = 0
+        db.commit()
+
+        balance = await crypto_wallet.get_wallet_balance(user.id, db)
+        assert balance["usdc_balance_cents"] == 4321
+        db.refresh(wallet)
+        assert wallet.usdc_balance_cents == 4321
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_non_custodial_wallet_creation_is_rejected():
     db = SessionLocal()
     try:

@@ -568,6 +568,19 @@ async def get_wallet_balance(user_id: str, db: Session) -> dict:
     if not user or not user.crypto_wallet_address:
         raise WalletNotInitialized(f"User {user_id} has no stablecoin wallet")
 
+    # User.usdc_balance_cents is the canonical ledger.  Older deposit/admin
+    # paths updated that ledger before the wallet mirror was introduced; heal
+    # the mirror on every authenticated read so exports and later services do
+    # not show a stale balance.  This is deliberately one-way: never let a
+    # potentially stale mirror overwrite the canonical ledger.
+    wallet = db.query(CryptoWallet).filter(
+        CryptoWallet.user_id == user_id,
+        CryptoWallet.status == "active",
+    ).first()
+    if wallet and wallet.usdc_balance_cents != user.usdc_balance_cents:
+        wallet.usdc_balance_cents = user.usdc_balance_cents
+        db.commit()
+
     return {
         "wallet_address": user.crypto_wallet_address,
         "usdc_balance": user.usdc_balance_cents / 100.0,
