@@ -51,6 +51,11 @@ async def exchange(req: ExchangeRequest, current_user: User = Depends(get_curren
     item_id = exchanged["item_id"]
     existing = db.query(PlaidItem).filter(PlaidItem.item_id == item_id).first()
     if existing:
+        if existing.user_id != current_user.id:
+            # A Plaid item is an account-owner secret. Never let a second
+            # authenticated user replace the original owner's token or claim
+            # the linked item by replaying a public token.
+            raise HTTPException(status_code=409, detail="This bank connection is already linked to another FAWN account.")
         # Re-linking the same institution — refresh the token, keep one row.
         existing.access_token = exchanged["access_token"]
         existing.status = "active"

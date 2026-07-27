@@ -72,3 +72,34 @@ def test_unconfigured_provider_returns_503(client):
     user_id = _create_user(f"pl_{uuid.uuid4().hex[:8]}@example.com")
     resp = client.post("/plaid/link-token", headers=_auth(_token_for(user_id)))
     assert resp.status_code == 503
+
+
+def test_exchange_cannot_reassign_item_to_another_user(client, monkeypatch):
+    item_id = f"item_{uuid.uuid4().hex[:8]}"
+    calls = {"n": 0}
+
+    async def fake_exchange(public_token):
+        calls["n"] += 1
+        return {"access_token": f"secret-{calls['n']}", "item_id": item_id}
+
+    async def fake_auth(access_token):
+        return {"mask": "4321", "account_name": "Test Checking", "account_number": "000004321"}
+
+    monkeypatch.setattr("routers.plaid_link.plaid_svc.exchange_public_token", fake_exchange)
+    monkeypatch.setattr("routers.plaid_link.plaid_svc.get_auth", fake_auth)
+
+    first_id = _create_user(f"pl_owner_{uuid.uuid4().hex[:8]}@example.com")
+    second_id = _create_user(f"pl_other_{uuid.uuid4().hex[:8]}@example.com")
+    first = client.post("/plaid/exchange", headers=_auth(_token_for(first_id)), json={"public_token": "public-1"})
+    assert first.status_code == 201
+
+    second = client.post("/plaid/exchange", headers=_auth(_token_for(second_id)), json={"public_token": "public-2"})
+    assert second.status_code == 409
+
+    db = SessionLocal()
+    try:
+        row = db.query(PlaidItem).filter(PlaidItem.item_id == item_id).one()
+        assert row.user_id == first_id
+        assert row.access_token == "secret-1"
+    finally:
+        db.close()

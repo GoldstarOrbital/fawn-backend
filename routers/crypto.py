@@ -18,6 +18,7 @@ from services import crypto_wallet
 from services import onchain_send
 from services.sanctions_screening import RecipientSanctioned
 from services.analytics import capture, EVENTS
+from models import User
 from rate_limiting import limiter, RATE_LIMITS
 from config import settings
 from logging_config import get_logger
@@ -205,6 +206,15 @@ async def create_wallet(
                 "for instant sends to actually work."
             ),
         )
+    existing_user = db.query(User).filter(User.id == user_id).first()
+    if existing_user and existing_user.crypto_wallet_address:
+        return {
+            "wallet_address": existing_user.crypto_wallet_address,
+            "wallet_type": existing_user.wallet_type or "fawn_custodial",
+            "usdc_balance": existing_user.usdc_balance_cents / 100.0,
+            "chain": "polygon",
+            "seed_phrase": None,
+        }
     try:
         result = await crypto_wallet.create_wallet(user_id, db, wallet_type=req.wallet_type)
         capture(EVENTS["WALLET_CREATED"], user_id, {"wallet_type": req.wallet_type})

@@ -128,7 +128,11 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
         if _password_contains_username(req.password, user.username or ""):
             db.rollback()
             raise HTTPException(status_code=400, detail="Password cannot contain your username or a username part")
-        db.commit()
+        # Provision the custodial wallet in the same signup workflow. The
+        # wallet service commits the user + wallet atomically from the
+        # session's point of view, so a successful registration never leaves
+        # a pilot user with a money account but no usable wallet.
+        await create_wallet(user.id, db, wallet_type="fawn_custodial")
         db.refresh(user)
         from services.product_metrics import record_metric
         record_metric(db, "onboarding_completed", user_id=user.id, success=True, path="/auth/register")
@@ -279,10 +283,13 @@ async def create_user_wallet(
     wallet-type input so clients cannot opt into an unsupported key model.
     """
     if current_user.crypto_wallet_address:
-        raise HTTPException(
-            status_code=400,
-            detail=f"User already has a wallet: {current_user.crypto_wallet_address}. Cannot create a second wallet."
-        )
+        return {
+            "wallet_address": current_user.crypto_wallet_address,
+            "wallet_type": current_user.wallet_type or "fawn_custodial",
+            "usdc_balance": current_user.usdc_balance_cents / 100.0,
+            "chain": "polygon",
+            "seed_phrase": None,
+        }
 
     try:
         wallet_data = await create_wallet(current_user.id, db, wallet_type="fawn_custodial")

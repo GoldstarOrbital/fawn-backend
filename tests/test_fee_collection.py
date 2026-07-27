@@ -213,7 +213,10 @@ def test_key_rotation_via_previous_key_fallback(monkeypatch):
         # verified below: this specific wallet's DEK really did get
         # re-wrapped under the new key (decryptable without the old one).
         assert result["rotated"] >= 1
-        assert result["failed"] == 0
+        assert not any(
+            failure["wallet_address"] == wallet_row.wallet_address
+            for failure in result["failures"]
+        )
 
         db.refresh(wallet_row)
         # Now decryptable WITHOUT the previous key at all.

@@ -122,7 +122,9 @@ def test_register_collects_no_sensitive_kyc_fields(client):
     me_resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me_resp.status_code == 200
     body = me_resp.json()
-    assert body["wallet_initialized"] is False
+    assert body["wallet_initialized"] is True
+    assert body["wallet_type"] == "fawn_custodial"
+    assert body["crypto_wallet_address"].startswith("0x")
     assert "ssn" not in body
     assert "date_of_birth" not in body
     assert "address" not in body
