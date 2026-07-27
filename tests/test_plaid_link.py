@@ -74,6 +74,37 @@ def test_unconfigured_provider_returns_503(client):
     assert resp.status_code == 503
 
 
+def test_status_reports_unconfigured_provider(client):
+    user_id = _create_user(f"pl_status_{uuid.uuid4().hex[:8]}@example.com")
+    resp = client.get("/plaid/status", headers=_auth(_token_for(user_id)))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["configured"] is False
+    assert body["can_link"] is False
+    assert body["can_fund"] is False
+    assert body["linked_accounts"] == 0
+    assert "secret" not in resp.text.lower()
+
+
+def test_status_counts_only_current_users_active_items(client):
+    first_id = _create_user(f"pl_status_a_{uuid.uuid4().hex[:8]}@example.com")
+    second_id = _create_user(f"pl_status_b_{uuid.uuid4().hex[:8]}@example.com")
+    db = SessionLocal()
+    try:
+        db.add_all([
+            PlaidItem(user_id=first_id, item_id=f"item_{uuid.uuid4().hex[:8]}", access_token="server-only"),
+            PlaidItem(user_id=first_id, item_id=f"item_{uuid.uuid4().hex[:8]}", access_token="server-only", status="revoked"),
+            PlaidItem(user_id=second_id, item_id=f"item_{uuid.uuid4().hex[:8]}", access_token="server-only"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+    resp = client.get("/plaid/status", headers=_auth(_token_for(first_id)))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["linked_accounts"] == 1
+
+
 def test_exchange_cannot_reassign_item_to_another_user(client, monkeypatch):
     item_id = f"item_{uuid.uuid4().hex[:8]}"
     calls = {"n": 0}

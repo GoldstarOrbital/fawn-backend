@@ -40,6 +40,24 @@ async def create_link_token(current_user: User = Depends(get_current_user)):
         raise _svc_error(e)
 
 
+@router.get("/status")
+def plaid_status(current_user: User = Depends(get_current_user),
+                 db: Session = Depends(get_db)):
+    """Return safe, user-scoped readiness information for bank linking."""
+    configured = bool(plaid_svc.settings.plaid_client_id and plaid_svc.settings.plaid_secret)
+    linked_accounts = db.query(PlaidItem).filter(
+        PlaidItem.user_id == current_user.id,
+        PlaidItem.status == "active",
+    ).count()
+    return {
+        "configured": configured,
+        "can_link": configured,
+        "can_fund": False,
+        "linked_accounts": linked_accounts,
+        "funding_message": "Bank funding is not enabled yet. Use the supported on-ramp or FAWN-to-FAWN transfers for now.",
+    }
+
+
 @router.post("/exchange", status_code=201)
 async def exchange(req: ExchangeRequest, current_user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)):
