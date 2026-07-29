@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     google_wallet_private_key: str = ""
     google_wallet_private_key_id: str = ""
 
+    # Direct Apple Wallet generic-pass issuance. FAWN owns and signs the pass;
+    # no card issuer or processor is involved. NFC must remain disabled until
+    # Apple grants FAWN the separate NFC pass entitlement.
+    apple_wallet_pass_type_identifier: str = ""
+    apple_wallet_team_identifier: str = ""
+    apple_wallet_certificate_pem: str = ""
+    apple_wallet_private_key_pem: str = ""
+    apple_wallet_private_key_password: str = ""
+    apple_wallet_wwdr_certificate_pem: str = ""
+    public_api_base_url: str = "https://web-production-13d5b.up.railway.app"
+
     # ---- Buy Crypto (on-ramp aggregator) ----
     # Multi-provider fiat-to-USDC on-ramp, embedded in the Add Funds modal.
     # These are PUBLISHABLE / host keys, not secrets — safe to expose to the

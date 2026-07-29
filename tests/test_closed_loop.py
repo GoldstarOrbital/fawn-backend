@@ -1,5 +1,10 @@
 """Closed-loop card, merchant enrollment, checkout, and tap settlement tests."""
 from datetime import datetime, timedelta
+import io
+import json
+from types import SimpleNamespace
+from urllib.parse import urlsplit
+import zipfile
 
 import jwt
 
@@ -65,8 +70,11 @@ def test_closed_loop_purchase_charges_exact_one_cent_to_each_side(client):
     assert card.json()["network"] == "FAWN"
     assert card.json()["phone_wallet"]["dynamic_tap_token"] is True
     assert card.json()["phone_wallet"]["google_wallet_pass_available"] is False
+    assert card.json()["phone_wallet"]["apple_wallet_pass_available"] is False
     unavailable_pass = client.post("/closed-loop/cards/me/google-wallet", headers=payer_headers)
     assert unavailable_pass.status_code == 503
+    unavailable_apple_pass = client.post("/closed-loop/cards/me/apple-wallet", headers=payer_headers)
+    assert unavailable_apple_pass.status_code == 503
 
     merchant = client.post("/closed-loop/merchants", headers=merchant_headers, json={
         "business_name": "Campus Coffee LLC",
@@ -176,6 +184,59 @@ def test_google_wallet_pass_uses_fawn_owned_signed_generic_pass(client, monkeypa
     generic = captured["claims"]["payload"]["genericObjects"][0]
     assert generic["classId"].startswith("123456789.fawn_balance_")
     assert generic["barcode"]["value"].startswith("fawn://card?card=")
+
+
+def test_apple_wallet_pass_uses_short_lived_signed_download(client, monkeypatch):
+    user_id = _user("apple-pass@example.com", "applepass", 1_000)
+    headers = _auth(user_id)
+    issued = client.post("/closed-loop/cards", headers=headers)
+    assert issued.status_code == 201
+
+    monkeypatch.setattr(settings, "apple_wallet_pass_type_identifier", "pass.com.fawn.balance")
+    monkeypatch.setattr(settings, "apple_wallet_team_identifier", "FAWNTEAM01")
+    monkeypatch.setattr(settings, "apple_wallet_certificate_pem", "certificate")
+    monkeypatch.setattr(settings, "apple_wallet_private_key_pem", "private-key")
+    monkeypatch.setattr(settings, "apple_wallet_wwdr_certificate_pem", "wwdr")
+    monkeypatch.setattr(settings, "public_api_base_url", "https://api.fawn.example")
+    monkeypatch.setattr(closed_loop, "_build_apple_wallet_pass", lambda card, user: b"signed-pkpass")
+
+    response = client.post("/closed-loop/cards/me/apple-wallet", headers=headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["wallet"] == "apple_wallet"
+    assert body["pass_type"] == "generic"
+    assert body["nfc_enabled"] is False
+    assert body["payment_card"] is False
+    assert body["expires_in_seconds"] == 300
+    assert body["add_url"].startswith("https://api.fawn.example/closed-loop/wallet-passes/apple/")
+
+    download = client.get(urlsplit(body["add_url"]).path)
+    assert download.status_code == 200, download.text
+    assert download.content == b"signed-pkpass"
+    assert download.headers["content-type"] == "application/vnd.apple.pkpass"
+    assert download.headers["cache-control"] == "private, no-store, max-age=0"
+    replay = client.get(urlsplit(body["add_url"]).path)
+    assert replay.status_code == 410
+
+
+def test_apple_wallet_package_has_signed_manifest_and_no_unapproved_nfc(monkeypatch):
+    monkeypatch.setattr(settings, "apple_wallet_pass_type_identifier", "pass.com.fawn.balance")
+    monkeypatch.setattr(settings, "apple_wallet_team_identifier", "FAWNTEAM01")
+    monkeypatch.setattr(closed_loop, "_sign_apple_manifest", lambda manifest: b"detached-signature")
+    card = SimpleNamespace(public_id="fawn-card-public-id", last_four="2046")
+    user = SimpleNamespace(full_name="Avery Fawn", username="avery")
+
+    package = closed_loop._build_apple_wallet_pass(card, user)
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        names = set(archive.namelist())
+        assert {"pass.json", "manifest.json", "signature", "icon.png", "icon@2x.png", "icon@3x.png"} <= names
+        pass_json = json.loads(archive.read("pass.json"))
+        manifest = json.loads(archive.read("manifest.json"))
+        assert archive.read("signature") == b"detached-signature"
+        assert pass_json["passTypeIdentifier"] == "pass.com.fawn.balance"
+        assert pass_json["barcodes"][0]["message"] == "fawn://card?card=fawn-card-public-id"
+        assert "nfc" not in pass_json
+        assert set(manifest) == {"pass.json", "icon.png", "icon@2x.png", "icon@3x.png"}
 
 
 def test_dynamic_tap_token_is_short_lived_and_single_use(client):

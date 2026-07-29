@@ -7,15 +7,22 @@ checkout. Both sides pay exactly one cent per completed purchase.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import secrets
+import struct
+import zipfile
+import zlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Security
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, Security
 from fastapi.security.api_key import APIKeyHeader
 import jwt
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.serialization import pkcs7
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +35,7 @@ from models import (
     ClosedLoopCard,
     ClosedLoopCheckout,
     ClosedLoopTapToken,
+    ClosedLoopWalletPassToken,
     CryptoWallet,
     MerchantAccount,
     MerchantApplication,
@@ -42,6 +50,7 @@ USER_FEE_CENTS = 1
 MERCHANT_FEE_CENTS = 1
 CHECKOUT_TTL_MINUTES = 15
 TAP_TOKEN_TTL_SECONDS = 60
+APPLE_PASS_URL_TTL_SECONDS = 300
 
 
 def _admin_key(key: Optional[str] = Security(ADMIN_HEADER)) -> str:
@@ -91,6 +100,13 @@ def _card_payload(row: ClosedLoopCard) -> dict:
         and settings.google_wallet_service_account_email
         and settings.google_wallet_private_key
     )
+    apple_wallet_ready = bool(
+        settings.apple_wallet_pass_type_identifier
+        and settings.apple_wallet_team_identifier
+        and settings.apple_wallet_certificate_pem
+        and settings.apple_wallet_private_key_pem
+        and settings.apple_wallet_wwdr_certificate_pem
+    )
     return {
         "id": row.id,
         "public_id": row.public_id,
@@ -106,10 +122,11 @@ def _card_payload(row: ClosedLoopCard) -> dict:
             "dynamic_qr": True,
             "dynamic_tap_token": True,
             "google_wallet_pass_available": google_wallet_ready,
+            "apple_wallet_pass_available": apple_wallet_ready,
             "apple_pay_payment_card": False,
             "google_pay_payment_card": False,
             "smart_tap_enabled": False,
-            "note": "The optional Google Wallet pass is visual only. Payment still requires a checkout-bound FAWN authorization.",
+            "note": "Optional Apple and Google Wallet passes are visual only. Payment still requires a checkout-bound FAWN authorization.",
         },
     }
 
@@ -178,6 +195,100 @@ def _google_wallet_add_url(card: ClosedLoopCard, current_user: User) -> str:
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Google Wallet signing credentials are invalid") from exc
     return f"https://pay.google.com/gp/v/save/{token}"
+
+
+def _pem(value: str) -> bytes:
+    return value.replace("\\n", "\n").encode()
+
+
+def _fawn_pass_icon(size: int) -> bytes:
+    """Create a tiny deterministic FAWN 'F' icon without runtime file I/O."""
+    green = (11, 77, 59, 255)
+    gold = (226, 184, 92, 255)
+    pixels = [green] * (size * size)
+    stroke = max(2, size // 7)
+    left = size // 4
+    top = size // 5
+    bottom = size - top
+    right = size - size // 5
+    middle = size // 2
+    for y in range(top, bottom):
+        for x in range(left, min(size, left + stroke)):
+            pixels[y * size + x] = gold
+    for y0, x1 in ((top, right), (middle, size - size // 3)):
+        for y in range(y0, min(size, y0 + stroke)):
+            for x in range(left, x1):
+                pixels[y * size + x] = gold
+    raw = b"".join(b"\x00" + bytes(channel for pixel in pixels[y * size:(y + 1) * size] for channel in pixel) for y in range(size))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
+def _sign_apple_manifest(manifest: bytes) -> bytes:
+    try:
+        certificate = x509.load_pem_x509_certificate(_pem(settings.apple_wallet_certificate_pem))
+        wwdr = x509.load_pem_x509_certificate(_pem(settings.apple_wallet_wwdr_certificate_pem))
+        password = settings.apple_wallet_private_key_password.encode() if settings.apple_wallet_private_key_password else None
+        private_key = serialization.load_pem_private_key(_pem(settings.apple_wallet_private_key_pem), password=password)
+        return (
+            pkcs7.PKCS7SignatureBuilder()
+            .set_data(manifest)
+            .add_signer(certificate, private_key, hashes.SHA256())
+            .add_certificate(wwdr)
+            .sign(serialization.Encoding.DER, [pkcs7.PKCS7Options.DetachedSignature, pkcs7.PKCS7Options.Binary])
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Apple Wallet signing credentials are invalid") from exc
+
+
+def _build_apple_wallet_pass(card: ClosedLoopCard, current_user: User) -> bytes:
+    holder = (current_user.full_name or current_user.username or "FAWN member")[:80]
+    pass_json = {
+        "formatVersion": 1,
+        "passTypeIdentifier": settings.apple_wallet_pass_type_identifier.strip(),
+        "serialNumber": card.public_id,
+        "teamIdentifier": settings.apple_wallet_team_identifier.strip(),
+        "organizationName": "FAWN",
+        "description": "FAWN closed-loop balance card",
+        "logoText": "FAWN balance",
+        "foregroundColor": "rgb(248, 245, 234)",
+        "labelColor": "rgb(226, 184, 92)",
+        "backgroundColor": "rgb(11, 77, 59)",
+        "sharingProhibited": True,
+        "generic": {
+            "primaryFields": [{"key": "card", "label": "FAWN CARD", "value": f"•••• {card.last_four}"}],
+            "secondaryFields": [{"key": "holder", "label": "CARDHOLDER", "value": holder}],
+            "auxiliaryFields": [{"key": "network", "label": "NETWORK", "value": "FAWN closed loop"}],
+            "backFields": [
+                {"key": "usage", "label": "WHERE IT WORKS", "value": "FAWN-controlled checkout only. Open FAWN to confirm the merchant, amount, and 1¢ user fee."},
+                {"key": "boundary", "label": "PAYMENT BOUNDARY", "value": "This is not an Apple Pay, Visa, or Mastercard payment card."},
+            ],
+        },
+        "barcodes": [{"format": "PKBarcodeFormatQR", "message": f"fawn://card?card={card.public_id}", "messageEncoding": "iso-8859-1", "altText": "Open FAWN to pay"}],
+    }
+    files = {
+        "pass.json": json.dumps(pass_json, ensure_ascii=False, separators=(",", ":")).encode(),
+        "icon.png": _fawn_pass_icon(29),
+        "icon@2x.png": _fawn_pass_icon(58),
+        "icon@3x.png": _fawn_pass_icon(87),
+    }
+    # Apple Wallet's package format specifies SHA-1 file digests in the
+    # manifest. This is format compatibility, not a security decision.
+    manifest = json.dumps(
+        {name: hashlib.sha1(data, usedforsecurity=False).hexdigest() for name, data in files.items()},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    files["manifest.json"] = manifest
+    files["signature"] = _sign_apple_manifest(manifest)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return output.getvalue()
 
 
 def _checkout_payload(row: ClosedLoopCheckout, merchant: MerchantAccount | None = None) -> dict:
@@ -364,6 +475,80 @@ def create_google_wallet_pass(
         "payment_card": False,
         "note": "This wallet pass identifies the FAWN card. Payment still requires checkout-bound authorization in FAWN.",
     }
+
+
+@router.post("/cards/me/apple-wallet")
+@limiter.limit(RATE_LIMITS["closed_loop_wallet_pass"])
+def create_apple_wallet_pass(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    card = db.query(ClosedLoopCard).filter(ClosedLoopCard.user_id == current_user.id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Issue your FAWN card before adding a wallet pass")
+    if card.status == "closed":
+        raise HTTPException(status_code=409, detail="A closed FAWN card cannot be added to a phone wallet")
+    if not _card_payload(card)["phone_wallet"]["apple_wallet_pass_available"]:
+        raise HTTPException(status_code=503, detail="Apple Wallet pass issuance is not configured")
+    now = _now()
+    download_token = secrets.token_urlsafe(32)
+    db.add(ClosedLoopWalletPassToken(
+        card_id=card.id,
+        user_id=current_user.id,
+        wallet="apple_wallet",
+        token_hash=hashlib.sha256(download_token.encode()).hexdigest(),
+        expires_at=now + timedelta(seconds=APPLE_PASS_URL_TTL_SECONDS),
+    ))
+    base = settings.public_api_base_url.rstrip("/")
+    add_url = f"{base}/closed-loop/wallet-passes/apple/{download_token}"
+    _audit(db, current_user.id, "closed_loop_apple_wallet_pass_created", {"card_id": card.id}, request)
+    db.commit()
+    return {
+        "wallet": "apple_wallet",
+        "pass_type": "generic",
+        "add_url": add_url,
+        "expires_in_seconds": APPLE_PASS_URL_TTL_SECONDS,
+        "nfc_enabled": False,
+        "payment_card": False,
+        "note": "This wallet pass identifies the FAWN card. Payment still requires checkout-bound authorization in FAWN.",
+    }
+
+
+@router.get("/wallet-passes/apple/{token}", name="download_apple_wallet_pass")
+@limiter.limit(RATE_LIMITS["closed_loop_wallet_pass"])
+def download_apple_wallet_pass(token: str, request: Request, db: Session = Depends(get_db)):
+    if len(token) < 32 or len(token) > 200:
+        raise HTTPException(status_code=404, detail="Apple Wallet pass link is invalid")
+    token_row = db.query(ClosedLoopWalletPassToken).filter(
+        ClosedLoopWalletPassToken.token_hash == hashlib.sha256(token.encode()).hexdigest(),
+        ClosedLoopWalletPassToken.wallet == "apple_wallet",
+    ).with_for_update().first()
+    if not token_row:
+        raise HTTPException(status_code=404, detail="Apple Wallet pass link is invalid")
+    if token_row.used_at is not None or _aware(token_row.expires_at) <= _now():
+        raise HTTPException(status_code=410, detail="Apple Wallet pass link expired or was already used")
+    card = db.query(ClosedLoopCard).filter(
+        ClosedLoopCard.id == token_row.card_id,
+        ClosedLoopCard.user_id == token_row.user_id,
+    ).first()
+    if not card or card.status == "closed":
+        raise HTTPException(status_code=404, detail="FAWN card not found")
+    current_user = db.query(User).filter(User.id == card.user_id).first()
+    if not current_user:
+        raise HTTPException(status_code=404, detail="FAWN member not found")
+    content = _build_apple_wallet_pass(card, current_user)
+    token_row.used_at = _now()
+    db.commit()
+    return Response(
+        content=content,
+        media_type="application/vnd.apple.pkpass",
+        headers={
+            "Content-Disposition": f'inline; filename="fawn-{card.last_four}.pkpass"',
+            "Cache-Control": "private, no-store, max-age=0",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 class CardControlsRequest(BaseModel):

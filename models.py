@@ -847,6 +847,22 @@ class ClosedLoopTapToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ClosedLoopWalletPassToken(Base):
+    """Short-lived, single-use handoff for downloading a signed phone pass."""
+    __tablename__ = "closed_loop_wallet_pass_tokens"
+
+    id = Column(String, primary_key=True, default=new_id)
+    card_id = Column(String, ForeignKey("closed_loop_cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    wallet = Column(String, nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (CheckConstraint("wallet IN ('apple_wallet')"),)
+
+
 class CryptoTrade(Base):
     """A cryptocurrency token swap trade via Uniswap on Polygon.
 
