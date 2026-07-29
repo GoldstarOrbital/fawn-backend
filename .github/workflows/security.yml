@@ -27,21 +27,27 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v4
-      - uses: google/osv-scanner-action/osv-scanner-action@v2.0.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve an exact Python dependency lock for OSV
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip freeze --exclude-editable > requirements-osv.txt
+      - uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
         with:
           scan-args: |-
-            --recursive
-            ./
+            --lockfile=requirements.txt:requirements-osv.txt
 
   trivy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy vulnerability + secret scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
