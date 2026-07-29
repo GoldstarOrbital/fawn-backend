@@ -15,7 +15,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Security
 from fastapi.security.api_key import APIKeyHeader
-from jose import jwt
+import jwt
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError

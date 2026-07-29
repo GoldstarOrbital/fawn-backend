@@ -1,7 +1,7 @@
 """Closed-loop card, merchant enrollment, checkout, and tap settlement tests."""
 from datetime import datetime, timedelta
 
-from jose import jwt
+import jwt
 
 from config import settings
 from database import SessionLocal

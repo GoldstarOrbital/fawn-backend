@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
-from jose import jwt
+import jwt
 
 from config import settings
 from database import SessionLocal

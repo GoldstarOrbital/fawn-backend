@@ -17,7 +17,7 @@ import time
 import uuid
 
 import httpx
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 
 from config import settings
 

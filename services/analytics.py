@@ -13,8 +13,7 @@ Event names are documented in docs/events.md.
 
 import os
 import threading
-import urllib.request
-import json
+import httpx
 from typing import Optional
 
 POSTHOG_API_KEY = os.environ.get("POSTHOG_API_KEY", "")
@@ -44,13 +43,7 @@ EVENTS = {
 
 def _send(payload: dict) -> None:
     try:
-        req = urllib.request.Request(
-            f"{POSTHOG_HOST}/capture/",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=3)
+        httpx.post(f"{POSTHOG_HOST.rstrip('/')}/capture/", json=payload, timeout=3.0)
     except Exception:
         pass  # fail silent — analytics must never break the app
 

@@ -7,7 +7,7 @@ Returns full article excerpts so the frontend never needs to open external links
 """
 import time
 import httpx
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 import re
 from config import settings
 

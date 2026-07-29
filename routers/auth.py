@@ -8,7 +8,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta, timezone
-from jose import jwt, jwk
+import jwt
 import bcrypt
 from database import get_db
 from models import User, PasswordResetToken, SocialIdentity
@@ -120,7 +120,8 @@ async def _verify_social_token(provider: str, raw_token: str) -> dict:
         key_data = next((key for key in jwks if key.get("kid") == header.get("kid")), None)
         if not key_data:
             raise ValueError("Unknown signing key")
-        claims = jwt.decode(raw_token, jwk.construct(key_data), algorithms=["RS256"], audience=audience, issuer=issuer)
+        signing_key = jwt.PyJWK.from_dict(key_data).key
+        claims = jwt.decode(raw_token, signing_key, algorithms=["RS256"], audience=audience, issuer=issuer)
     except Exception:
         raise HTTPException(status_code=401, detail="Social sign-in could not be verified")
     email = (claims.get("email") or "").strip().lower()

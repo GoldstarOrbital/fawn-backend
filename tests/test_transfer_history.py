@@ -8,7 +8,7 @@ into one chronological list.
 import uuid
 from datetime import datetime, timedelta
 
-from jose import jwt
+import jwt
 
 from database import SessionLocal
 from models import User, CryptoDeposit

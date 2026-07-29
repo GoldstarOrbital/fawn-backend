@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timezone, timedelta
 import httpx
-from jose import jwt
+import jwt
 
 from database import get_db
 from models import WaitlistEntry, EmailLog

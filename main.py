@@ -410,7 +410,8 @@ async def record_transfer_reliability(request: Request, call_next):
         "/transfers/send", "/transfers/send-unified", "/transfers/send-to-bank",
     }:
         from services.product_metrics import record_metric
-        from jose import jwt, JWTError
+        import jwt
+        from jwt.exceptions import InvalidTokenError as JWTError
         user_id = None
         auth_header = request.headers.get("Authorization", "")
         if auth_header.lower().startswith("bearer "):

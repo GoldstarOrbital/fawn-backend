@@ -15,11 +15,13 @@ if sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
 
 def run_cmd(cmd, json_output=False):
-    """Run command and return output"""
+    """Run a fixed argv command and return output without invoking a shell."""
+    if not isinstance(cmd, (list, tuple)) or not cmd:
+        raise ValueError("cmd must be a non-empty argv list")
     try:
         result = subprocess.run(
             cmd,
-            shell=True,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=30,
@@ -48,14 +50,14 @@ def check_deployment_status(max_retries=30, retry_interval=5):
         print("[Attempt {}/{}] Checking deployment status...".format(attempt, max_retries))
 
         # Get project info
-        project_info = run_cmd("railway project --json", json_output=True)
+        project_info = run_cmd(["railway", "project", "--json"], json_output=True)
         if not project_info:
             print("  [WAIT] Railway CLI not linked. Trying to get status anyway...")
         else:
             print("  Project: {}".format(project_info.get('name', 'N/A')))
 
         # Get deployment logs (last 20 lines)
-        logs = run_cmd("railway logs --tail=20")
+        logs = run_cmd(["railway", "logs", "--tail=20"])
 
         if logs:
             # Check for success indicators
@@ -103,20 +105,20 @@ def get_failure_details():
     # Get full logs
     print("\nFull recent logs:")
     print("-" * 60)
-    logs = run_cmd("railway logs --tail=100")
+    logs = run_cmd(["railway", "logs", "--tail=100"])
     if logs:
         print(logs)
     print("-" * 60)
 
     # Get build status
     print("\nBuild status:")
-    status = run_cmd("railway status")
+    status = run_cmd(["railway", "status"])
     if status:
         print(status)
 
     # Get environment variables
     print("\nEnvironment variables:")
-    env = run_cmd("railway variables")
+    env = run_cmd(["railway", "variables"])
     if env:
         print(env[:500])  # First 500 chars
 

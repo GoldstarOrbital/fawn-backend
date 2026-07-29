@@ -17,7 +17,8 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from jose import jwt as pyjwt, JWTError, ExpiredSignatureError
+import jwt as pyjwt
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError as JWTError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session

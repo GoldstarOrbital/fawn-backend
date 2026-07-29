@@ -7,7 +7,7 @@ pattern) to avoid the rate-limited /auth/register endpoint.
 import uuid
 from datetime import datetime, timedelta
 
-from jose import jwt
+import jwt
 
 from database import SessionLocal
 from models import User

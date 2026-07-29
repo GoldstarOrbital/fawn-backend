@@ -11,7 +11,7 @@ pattern tests/test_transfer_history.py uses.
 import uuid
 from datetime import datetime, timedelta
 
-from jose import jwt
+import jwt
 
 from database import SessionLocal
 from models import User
