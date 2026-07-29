@@ -129,8 +129,26 @@ def update_ticket(ticket_id: str, req: SupportUpdate, db: Session = Depends(get_
 @router.get("/cards/status")
 def card_status(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.query(CardRequest).filter(CardRequest.user_id == current_user.id).first()
-    configured = bool(getattr(settings, "lithic_api_key", ""))
-    return {"issuer_configured": configured, "status": row.status if row else "not_requested", "card_type": row.card_type if row else "virtual_debit", "message": "Card issuance is being prepared; FAWN will show availability before collecting any card details." if not configured else "Card issuance is available for eligible users."}
+    # Deliberately do not infer readiness from a third-party credential. FAWN's
+    # no-middleman requirement means a network card cannot activate until the
+    # FAWN-owned issuing, network, and Apple approvals are complete.
+    return {
+        "issuer_configured": False,
+        "program_owner": "FAWN",
+        "issuance_mode": "virtual_first",
+        "network_card_supported": False,
+        "apple_pay_supported": False,
+        "status": row.status if row else "not_requested",
+        "card_type": row.card_type if row else "virtual_debit",
+        "readiness": {
+            "fawn_licensed_issuer": False,
+            "card_network_program": False,
+            "apple_merchant_identifier": False,
+            "apple_payment_processing_certificate": False,
+            "apple_issuer_tokenization_approval": False,
+        },
+        "message": "FAWN card issuance is not enabled yet. Join the interest list while FAWN completes its own licensed issuing, network, and Apple Pay program requirements.",
+    }
 
 
 @router.post("/cards/request", status_code=201)

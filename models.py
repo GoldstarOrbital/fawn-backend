@@ -2,6 +2,7 @@ from sqlalchemy import Column, String, DateTime, Boolean, Numeric, Integer, Larg
 from sqlalchemy.sql import func
 from database import Base
 import uuid
+import secrets
 
 def new_id():
     return str(uuid.uuid4())
@@ -725,7 +726,7 @@ class SupportTicket(Base):
 
 
 class CardRequest(Base):
-    """Card interest/request record until a regulated issuer is configured."""
+    """Card interest/request record until FAWN has its own licensed program."""
     __tablename__ = "card_requests"
 
     id = Column(String, primary_key=True, default=new_id)
@@ -733,6 +734,117 @@ class CardRequest(Base):
     status = Column(String, nullable=False, default="interest")  # interest | pending_provider | active
     card_type = Column(String, nullable=False, default="virtual_debit")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MerchantApplication(Base):
+    """Public merchant interest form; no payment capability is granted here."""
+    __tablename__ = "merchant_applications"
+
+    id = Column(String, primary_key=True, default=new_id)
+    email = Column(String, nullable=False, index=True)
+    contact_name = Column(String, nullable=False)
+    business_name = Column(String, nullable=False, index=True)
+    website = Column(String, nullable=True)
+    category = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="received", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('received', 'contacted', 'converted', 'declined')"),
+    )
+
+
+class MerchantAccount(Base):
+    """FAWN merchant allowed to accept closed-loop balance-card payments."""
+    __tablename__ = "merchant_accounts"
+
+    id = Column(String, primary_key=True, default=new_id)
+    owner_user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    business_name = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    merchant_slug = Column(String, nullable=False, unique=True, index=True)
+    website = Column(String, nullable=True)
+    support_email = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending_review", index=True)
+    transaction_fee_cents = Column(Integer, nullable=False, default=1)
+    total_volume_cents = Column(Integer, nullable=False, default=0)
+    total_fees_paid_cents = Column(Integer, nullable=False, default=0)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending_review', 'active', 'suspended', 'rejected')"),
+        CheckConstraint("transaction_fee_cents = 1"),
+        CheckConstraint("total_volume_cents >= 0"),
+        CheckConstraint("total_fees_paid_cents >= 0"),
+    )
+
+
+class ClosedLoopCard(Base):
+    """A FAWN-only balance credential, not a Visa/Mastercard PAN."""
+    __tablename__ = "closed_loop_cards"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    public_id = Column(String, nullable=False, unique=True, index=True, default=lambda: secrets.token_urlsafe(18))
+    last_four = Column(String(4), nullable=False, default=lambda: f"{secrets.randbelow(10_000):04d}")
+    status = Column(String, nullable=False, default="active", index=True)
+    per_transaction_limit_cents = Column(Integer, nullable=False, default=200_000)
+    daily_limit_cents = Column(Integer, nullable=False, default=500_000)
+    issued_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'frozen', 'closed')"),
+        CheckConstraint("per_transaction_limit_cents BETWEEN 100 AND 200000"),
+        CheckConstraint("daily_limit_cents BETWEEN 100 AND 500000"),
+    )
+
+
+class ClosedLoopCheckout(Base):
+    """One merchant-presented FAWN checkout and its immutable fee split."""
+    __tablename__ = "closed_loop_checkouts"
+
+    id = Column(String, primary_key=True, default=new_id)
+    merchant_id = Column(String, ForeignKey("merchant_accounts.id", ondelete="RESTRICT"), nullable=False, index=True)
+    checkout_token = Column(String, nullable=False, unique=True, index=True, default=lambda: secrets.token_urlsafe(24))
+    idempotency_key = Column(String(64), nullable=True, unique=True, index=True)
+    order_reference = Column(String, nullable=True)
+    amount_cents = Column(Integer, nullable=False)
+    user_fee_cents = Column(Integer, nullable=False, default=1)
+    merchant_fee_cents = Column(Integer, nullable=False, default=1)
+    status = Column(String, nullable=False, default="open", index=True)
+    payer_user_id = Column(String, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True)
+    card_id = Column(String, ForeignKey("closed_loop_cards.id", ondelete="RESTRICT"), nullable=True, index=True)
+    merchant_net_cents = Column(Integer, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("amount_cents BETWEEN 2 AND 200000"),
+        CheckConstraint("user_fee_cents = 1"),
+        CheckConstraint("merchant_fee_cents = 1"),
+        CheckConstraint("merchant_net_cents IS NULL OR merchant_net_cents >= 1"),
+        CheckConstraint("status IN ('open', 'completed', 'cancelled', 'expired', 'refunded')"),
+        Index("idx_closed_loop_merchant_created", "merchant_id", "created_at"),
+        Index("idx_closed_loop_payer_created", "payer_user_id", "created_at"),
+    )
+
+
+class ClosedLoopTapToken(Base):
+    """Short-lived single-use bearer token for a FAWN-owned terminal handoff."""
+    __tablename__ = "closed_loop_tap_tokens"
+
+    id = Column(String, primary_key=True, default=new_id)
+    card_id = Column(String, ForeignKey("closed_loop_cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    checkout_id = Column(String, ForeignKey("closed_loop_checkouts.id", ondelete="CASCADE"), nullable=False, index=True)
+    merchant_id = Column(String, ForeignKey("merchant_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class CryptoTrade(Base):

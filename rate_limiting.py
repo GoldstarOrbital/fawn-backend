@@ -25,6 +25,14 @@ RATE_LIMITS = {
     "transfer_send": "30/hour",  # Prevent transfer spam (max 30 per hour per IP)
     "transfer_history": "60/minute",  # Reading history is safe
 
+    # Closed-loop card and merchant checkout
+    "merchant_application": "5/hour",
+    "closed_loop_card_issue": "5/hour",
+    "closed_loop_checkout_create": "120/hour",
+    "closed_loop_checkout_pay": "30/hour",
+    "closed_loop_tap_token": "30/minute",
+    "closed_loop_wallet_pass": "10/hour",
+
     # User data operations
     "user_export": "1/day",  # GDPR export once per day per IP
     "user_delete": "1/day",  # Account deletion max once per day per IP

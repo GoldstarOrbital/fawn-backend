@@ -1,0 +1,234 @@
+"""Closed-loop card, merchant enrollment, checkout, and tap settlement tests."""
+from datetime import datetime, timedelta
+
+from jose import jwt
+
+from config import settings
+from database import SessionLocal
+from models import ClosedLoopCheckout, CryptoWallet, MerchantAccount, User
+from routers import closed_loop
+
+
+def _auth(user_id: str) -> dict[str, str]:
+    token = jwt.encode(
+        {"sub": user_id, "exp": datetime.utcnow() + timedelta(minutes=30)},
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _user(email: str, username: str, balance_cents: int) -> str:
+    db = SessionLocal()
+    user = User(
+        email=email,
+        username=username,
+        hashed_password="test",
+        full_name=username.title(),
+        wallet_initialized=True,
+        wallet_type="fawn_custodial",
+        crypto_wallet_address=f"0x{username.encode().hex():0<40}"[:42],
+        usdc_balance_cents=balance_cents,
+    )
+    db.add(user)
+    db.flush()
+    db.add(CryptoWallet(
+        user_id=user.id,
+        wallet_address=user.crypto_wallet_address,
+        wallet_type="fawn_custodial",
+        chain="polygon",
+        status="active",
+        usdc_balance_cents=balance_cents,
+    ))
+    db.commit()
+    user_id = user.id
+    db.close()
+    return user_id
+
+
+def _approve(client, merchant_id: str):
+    response = client.post(
+        f"/closed-loop/admin/merchants/{merchant_id}/approve",
+        headers={"X-Admin-Key": "test-admin-key-12345"},
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_closed_loop_purchase_charges_exact_one_cent_to_each_side(client):
+    payer_id = _user("closed-payer@example.com", "closedpayer", 10_000)
+    merchant_owner_id = _user("closed-merchant@example.com", "closedmerchant", 1_000)
+    payer_headers = _auth(payer_id)
+    merchant_headers = _auth(merchant_owner_id)
+
+    card = client.post("/closed-loop/cards", headers=payer_headers)
+    assert card.status_code == 201, card.text
+    assert card.json()["network"] == "FAWN"
+    assert card.json()["phone_wallet"]["dynamic_tap_token"] is True
+    assert card.json()["phone_wallet"]["google_wallet_pass_available"] is False
+    unavailable_pass = client.post("/closed-loop/cards/me/google-wallet", headers=payer_headers)
+    assert unavailable_pass.status_code == 503
+
+    merchant = client.post("/closed-loop/merchants", headers=merchant_headers, json={
+        "business_name": "Campus Coffee LLC",
+        "display_name": "Campus Coffee",
+        "support_email": "help@campuscoffee.example",
+    })
+    assert merchant.status_code == 201, merchant.text
+    merchant_id = merchant.json()["id"]
+    assert merchant.json()["status"] == "pending_review"
+    _approve(client, merchant_id)
+
+    checkout_headers = {**merchant_headers, "Idempotency-Key": "latte-order-001"}
+    checkout = client.post("/closed-loop/merchant/checkouts", headers=checkout_headers, json={
+        "amount_cents": 500,
+        "order_reference": "latte-001",
+    })
+    assert checkout.status_code == 201, checkout.text
+    body = checkout.json()
+    assert body["user_fee_cents"] == 1
+    assert body["merchant_fee_cents"] == 1
+    assert body["payer_total_cents"] == 501
+    checkout_replay = client.post("/closed-loop/merchant/checkouts", headers=checkout_headers, json={
+        "amount_cents": 500,
+        "order_reference": "latte-001",
+    })
+    assert checkout_replay.status_code == 201
+    assert checkout_replay.json()["checkout_token"] == body["checkout_token"]
+    assert checkout_replay.json()["idempotent_replay"] is True
+
+    paid = client.post(f"/closed-loop/checkouts/{body['checkout_token']}/authorize", headers=payer_headers)
+    assert paid.status_code == 200, paid.text
+    result = paid.json()
+    assert result["status"] == "completed"
+    assert result["merchant_net_cents"] == 499
+    assert result["payer_balance_cents"] == 9_499
+    assert result["merchant_balance_cents"] == 1_499
+
+    payer_activity = client.get("/closed-loop/activity", headers=payer_headers).json()["activity"]
+    merchant_activity = client.get("/closed-loop/activity", headers=merchant_headers).json()["activity"]
+    assert payer_activity[0]["type"] == "purchase"
+    assert payer_activity[0]["amount_cents"] == -501
+    assert merchant_activity[0]["type"] == "merchant_sale"
+    assert merchant_activity[0]["amount_cents"] == 499
+
+    replay = client.post(f"/closed-loop/checkouts/{body['checkout_token']}/authorize", headers=payer_headers)
+    assert replay.status_code == 200
+    assert replay.json()["idempotent_replay"] is True
+
+    db = SessionLocal()
+    payer = db.query(User).filter(User.id == payer_id).first()
+    merchant_owner = db.query(User).filter(User.id == merchant_owner_id).first()
+    merchant_row = db.query(MerchantAccount).filter(MerchantAccount.id == merchant_id).first()
+    payer_wallet = db.query(CryptoWallet).filter(CryptoWallet.user_id == payer_id).first()
+    purchase_count = db.query(ClosedLoopCheckout).filter(ClosedLoopCheckout.checkout_token == body["checkout_token"]).count()
+    assert payer.usdc_balance_cents == 9_499
+    assert payer.total_fees_paid_cents == 1
+    assert merchant_owner.usdc_balance_cents == 1_499
+    assert merchant_owner.total_fees_paid_cents == 1
+    assert merchant_row.total_volume_cents == 500
+    assert merchant_row.total_fees_paid_cents == 1
+    assert payer_wallet.pending_fee_cents == 2
+    assert purchase_count == 1
+    db.close()
+
+
+def test_card_issuance_requires_active_custodial_wallet(client):
+    user_id = _user("legacy-card@example.com", "legacycard", 1_000)
+    db = SessionLocal()
+    wallet = db.query(CryptoWallet).filter(CryptoWallet.user_id == user_id).first()
+    wallet.wallet_type = "non_custodial"
+    db.commit()
+    db.close()
+
+    response = client.post("/closed-loop/cards", headers=_auth(user_id))
+    assert response.status_code == 409
+    assert "active custodial wallet" in response.json()["detail"].lower()
+
+
+def test_google_wallet_pass_uses_fawn_owned_signed_generic_pass(client, monkeypatch):
+    user_id = _user("wallet-pass@example.com", "walletpass", 1_000)
+    headers = _auth(user_id)
+    issued = client.post("/closed-loop/cards", headers=headers)
+    assert issued.status_code == 201
+
+    captured = {}
+
+    def fake_encode(claims, key, algorithm, headers):
+        captured.update({"claims": claims, "key": key, "algorithm": algorithm, "headers": headers})
+        return "signed-wallet-jwt"
+
+    monkeypatch.setattr(settings, "google_wallet_issuer_id", "123456789")
+    monkeypatch.setattr(settings, "google_wallet_service_account_email", "wallet@fawn.example")
+    monkeypatch.setattr(settings, "google_wallet_private_key", "FAWN-PRIVATE-KEY\\nLINE-2")
+    monkeypatch.setattr(settings, "google_wallet_private_key_id", "key-1")
+    monkeypatch.setattr(closed_loop.jwt, "encode", fake_encode)
+
+    response = client.post("/closed-loop/cards/me/google-wallet", headers=headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["add_url"] == "https://pay.google.com/gp/v/save/signed-wallet-jwt"
+    assert body["pass_type"] == "generic"
+    assert body["smart_tap_enabled"] is False
+    assert body["payment_card"] is False
+    assert captured["algorithm"] == "RS256"
+    assert captured["key"] == "FAWN-PRIVATE-KEY\nLINE-2"
+    assert captured["claims"]["iss"] == "wallet@fawn.example"
+    generic = captured["claims"]["payload"]["genericObjects"][0]
+    assert generic["classId"].startswith("123456789.fawn_balance_")
+    assert generic["barcode"]["value"].startswith("fawn://card?card=")
+
+
+def test_dynamic_tap_token_is_short_lived_and_single_use(client):
+    payer_id = _user("tap-payer@example.com", "tappayer", 5_000)
+    merchant_owner_id = _user("tap-merchant@example.com", "tapmerchant", 500)
+    payer_headers = _auth(payer_id)
+    merchant_headers = _auth(merchant_owner_id)
+    client.post("/closed-loop/cards", headers=payer_headers)
+    merchant = client.post("/closed-loop/merchants", headers=merchant_headers, json={
+        "business_name": "Tap Shop LLC",
+        "display_name": "Tap Shop",
+        "support_email": "help@tapshop.example",
+    }).json()
+    _approve(client, merchant["id"])
+
+    checkout = client.post("/closed-loop/merchant/checkouts", headers=merchant_headers, json={"amount_cents": 250}).json()
+    tap = client.post("/closed-loop/cards/me/tap-token", headers=payer_headers, json={"checkout_token": checkout["checkout_token"]})
+    assert tap.status_code == 201, tap.text
+    assert tap.json()["single_use"] is True
+
+    accepted = client.post(
+        f"/closed-loop/merchant/checkouts/{checkout['checkout_token']}/tap",
+        headers=merchant_headers,
+        json={"tap_token": tap.json()["tap_token"]},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["acceptance_method"] == "dynamic_tap_token"
+
+    second_checkout = client.post("/closed-loop/merchant/checkouts", headers=merchant_headers, json={"amount_cents": 200}).json()
+    replay = client.post(
+        f"/closed-loop/merchant/checkouts/{second_checkout['checkout_token']}/tap",
+        headers=merchant_headers,
+        json={"tap_token": tap.json()["tap_token"]},
+    )
+    assert replay.status_code == 401
+
+    fresh_tap = client.post("/closed-loop/cards/me/tap-token", headers=payer_headers, json={"checkout_token": second_checkout["checkout_token"]}).json()
+    third_checkout = client.post("/closed-loop/merchant/checkouts", headers=merchant_headers, json={"amount_cents": 175}).json()
+    wrong_checkout = client.post(
+        f"/closed-loop/merchant/checkouts/{third_checkout['checkout_token']}/tap",
+        headers=merchant_headers,
+        json={"tap_token": fresh_tap["tap_token"]},
+    )
+    assert wrong_checkout.status_code == 403
+
+
+def test_public_merchant_application_does_not_enable_payments(client):
+    response = client.post("/closed-loop/merchant-applications", json={
+        "email": "owner@bookshop.example",
+        "contact_name": "Morgan Lee",
+        "business_name": "Campus Bookshop",
+        "website": "https://bookshop.example",
+        "category": "retail",
+    })
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "received"

@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./fawn.db"
+    frontend_base_url: str = "https://goldstarorbital.github.io/fawn-frontend/"
 
     # ---- Third-party integrations ----
     # FAWN is custodial/crypto-native. The only remaining third parties are
@@ -32,9 +33,14 @@ class Settings(BaseSettings):
     google_oauth_client_id: str = ""
     apple_oauth_client_id: str = ""
 
-    # Card issuance (provider-gated; no card credentials means safe waitlist mode)
-    lithic_api_key: str = ""
-    lithic_base_url: str = "https://sandbox.lithic.com/v1"
+    # Direct Google Wallet pass issuance. These belong to FAWN's own Google
+    # Wallet issuer/service account; no card issuer or processor is involved.
+    # A generic pass is a visual wallet credential only until Google separately
+    # enables Smart Tap for FAWN and its terminals.
+    google_wallet_issuer_id: str = ""
+    google_wallet_service_account_email: str = ""
+    google_wallet_private_key: str = ""
+    google_wallet_private_key_id: str = ""
 
     # ---- Buy Crypto (on-ramp aggregator) ----
     # Multi-provider fiat-to-USDC on-ramp, embedded in the Add Funds modal.

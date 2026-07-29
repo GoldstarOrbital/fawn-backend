@@ -43,7 +43,13 @@ def test_feedback_support_and_card_interest(client):
     assert card.status_code == 201
     status = client.get("/experience/cards/status", headers=headers)
     assert status.status_code == 200
-    assert status.json()["status"] == "interest"
+    body = status.json()
+    assert body["status"] == "interest"
+    assert body["program_owner"] == "FAWN"
+    assert body["issuer_configured"] is False
+    assert body["network_card_supported"] is False
+    assert body["apple_pay_supported"] is False
+    assert body["readiness"]["fawn_licensed_issuer"] is False
 
 
 def test_scorecard_does_not_invent_empty_metrics(client, admin_key):
