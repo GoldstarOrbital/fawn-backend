@@ -863,6 +863,46 @@ class ClosedLoopWalletPassToken(Base):
     __table_args__ = (CheckConstraint("wallet IN ('apple_wallet')"),)
 
 
+class ClosedLoopNfcDevice(Base):
+    """An Android device key allowed to answer FAWN HCE challenges."""
+    __tablename__ = "closed_loop_nfc_devices"
+
+    id = Column(String, primary_key=True, default=new_id)
+    card_id = Column(String, ForeignKey("closed_loop_cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    device_name = Column(String(80), nullable=False)
+    platform = Column(String(20), nullable=False, default="android")
+    public_key_der = Column(LargeBinary, nullable=False)
+    public_key_fingerprint = Column(String(64), nullable=False, unique=True, index=True)
+    attestation_status = Column(String(20), nullable=False, default="unverified")
+    status = Column(String(20), nullable=False, default="active", index=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("platform IN ('android')"),
+        CheckConstraint("attestation_status IN ('unverified', 'verified', 'failed')"),
+        CheckConstraint("status IN ('active', 'revoked')"),
+        Index("idx_closed_loop_nfc_user_status", "user_id", "status"),
+    )
+
+
+class ClosedLoopNfcChallenge(Base):
+    """Checkout-bound, short-lived challenge for one NFC authorization."""
+    __tablename__ = "closed_loop_nfc_challenges"
+
+    id = Column(String, primary_key=True, default=new_id)
+    checkout_id = Column(String, ForeignKey("closed_loop_checkouts.id", ondelete="CASCADE"), nullable=False, index=True)
+    merchant_id = Column(String, ForeignKey("merchant_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    challenge_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (Index("idx_closed_loop_nfc_checkout_created", "checkout_id", "created_at"),)
+
+
 class CryptoTrade(Base):
     """A cryptocurrency token swap trade via Uniswap on Polygon.
 

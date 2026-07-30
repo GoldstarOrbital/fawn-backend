@@ -32,6 +32,9 @@ RATE_LIMITS = {
     "closed_loop_checkout_pay": "30/hour",
     "closed_loop_tap_token": "30/minute",
     "closed_loop_wallet_pass": "10/hour",
+    "closed_loop_nfc_device": "10/hour",
+    "closed_loop_nfc_challenge": "120/hour",
+    "closed_loop_nfc_authorize": "60/hour",
 
     # User data operations
     "user_export": "1/day",  # GDPR export once per day per IP

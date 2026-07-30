@@ -14,6 +14,8 @@ import secrets
 import struct
 import zipfile
 import zlib
+import base64
+import binascii
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -21,7 +23,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security.api_key import APIKeyHeader
 import jwt
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import pkcs7
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -36,6 +40,8 @@ from models import (
     ClosedLoopCheckout,
     ClosedLoopTapToken,
     ClosedLoopWalletPassToken,
+    ClosedLoopNfcChallenge,
+    ClosedLoopNfcDevice,
     CryptoWallet,
     MerchantAccount,
     MerchantApplication,
@@ -51,6 +57,11 @@ MERCHANT_FEE_CENTS = 1
 CHECKOUT_TTL_MINUTES = 15
 TAP_TOKEN_TTL_SECONDS = 60
 APPLE_PASS_URL_TTL_SECONDS = 300
+NFC_CHALLENGE_TTL_SECONDS = 30
+NFC_MAX_AMOUNT_CENTS = 10_000
+NFC_MAX_ACTIVE_DEVICES = 5
+FAWN_HCE_AID = "F04641574E0101"
+FAWN_NFC_SIGNING_PREFIX = b"FAWN-NFC-v1\x00"
 
 
 def _admin_key(key: Optional[str] = Security(ADMIN_HEADER)) -> str:
@@ -65,6 +76,22 @@ def _now() -> datetime:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+
+def _b64url_decode(value: str, *, field: str, max_bytes: int) -> bytes:
+    if len(value) > max_bytes * 2:
+        raise HTTPException(status_code=422, detail=f"{field} is too large")
+    try:
+        decoded = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"{field} must be base64url") from exc
+    if len(decoded) > max_bytes:
+        raise HTTPException(status_code=422, detail=f"{field} is too large")
+    return decoded
 
 
 def _audit(db: Session, user_id: str, action: str, details: dict, request: Request | None = None) -> None:
@@ -128,6 +155,22 @@ def _card_payload(row: ClosedLoopCard) -> dict:
             "smart_tap_enabled": False,
             "note": "Optional Apple and Google Wallet passes are visual only. Payment still requires a checkout-bound FAWN authorization.",
         },
+    }
+
+
+def _nfc_device_payload(row: ClosedLoopNfcDevice) -> dict:
+    return {
+        "id": row.id,
+        "card_id": row.card_id,
+        "device_name": row.device_name,
+        "platform": row.platform,
+        "status": row.status,
+        "attestation_status": row.attestation_status,
+        "key_fingerprint": row.public_key_fingerprint,
+        "hce_aid": FAWN_HCE_AID,
+        "requires_device_unlock": True,
+        "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
 
@@ -582,6 +625,101 @@ def update_card_controls(
     return _card_payload(row)
 
 
+class NfcDeviceRegisterRequest(BaseModel):
+    device_name: str = Field(min_length=2, max_length=80)
+    public_key_spki_b64: str = Field(min_length=80, max_length=1000)
+
+
+@router.post("/cards/me/nfc-devices", status_code=201)
+@limiter.limit(RATE_LIMITS["closed_loop_nfc_device"])
+def register_nfc_device(
+    req: NfcDeviceRegisterRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    card = db.query(ClosedLoopCard).filter(ClosedLoopCard.user_id == current_user.id).with_for_update().first()
+    if not card or card.status != "active":
+        raise HTTPException(status_code=409, detail="An active FAWN card is required")
+    der = _b64url_decode(req.public_key_spki_b64, field="public_key_spki_b64", max_bytes=512)
+    try:
+        public_key = serialization.load_der_public_key(der)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Enter a valid DER SubjectPublicKeyInfo key") from exc
+    if not isinstance(public_key, ec.EllipticCurvePublicKey) or not isinstance(public_key.curve, ec.SECP256R1):
+        raise HTTPException(status_code=422, detail="FAWN NFC requires an EC P-256 device key")
+    canonical_der = public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    fingerprint = hashlib.sha256(canonical_der).hexdigest()
+    existing = db.query(ClosedLoopNfcDevice).filter(
+        ClosedLoopNfcDevice.public_key_fingerprint == fingerprint
+    ).with_for_update().first()
+    if existing:
+        if existing.user_id != current_user.id or existing.card_id != card.id:
+            raise HTTPException(status_code=409, detail="This NFC device key is already registered")
+        if existing.status == "revoked":
+            raise HTTPException(status_code=409, detail="This NFC device key was revoked; generate a new device key")
+        return _nfc_device_payload(existing)
+    active_count = db.query(func.count(ClosedLoopNfcDevice.id)).filter(
+        ClosedLoopNfcDevice.user_id == current_user.id,
+        ClosedLoopNfcDevice.card_id == card.id,
+        ClosedLoopNfcDevice.status == "active",
+    ).scalar() or 0
+    if int(active_count) >= NFC_MAX_ACTIVE_DEVICES:
+        raise HTTPException(status_code=409, detail="Revoke an old NFC device before adding another")
+    row = ClosedLoopNfcDevice(
+        card_id=card.id,
+        user_id=current_user.id,
+        device_name=req.device_name.strip(),
+        platform="android",
+        public_key_der=canonical_der,
+        public_key_fingerprint=fingerprint,
+        attestation_status="unverified",
+        status="active",
+    )
+    db.add(row)
+    db.flush()
+    _audit(db, current_user.id, "closed_loop_nfc_device_registered", {
+        "card_id": card.id,
+        "device_id": row.id,
+        "key_fingerprint": fingerprint,
+    }, request)
+    db.commit()
+    db.refresh(row)
+    return _nfc_device_payload(row)
+
+
+@router.get("/cards/me/nfc-devices")
+def list_nfc_devices(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rows = db.query(ClosedLoopNfcDevice).filter(
+        ClosedLoopNfcDevice.user_id == current_user.id
+    ).order_by(ClosedLoopNfcDevice.created_at.desc()).limit(100).all()
+    return {"devices": [_nfc_device_payload(row) for row in rows]}
+
+
+@router.delete("/cards/me/nfc-devices/{device_id}")
+def revoke_nfc_device(
+    device_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.query(ClosedLoopNfcDevice).filter(
+        ClosedLoopNfcDevice.id == device_id,
+        ClosedLoopNfcDevice.user_id == current_user.id,
+    ).with_for_update().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="NFC device not found")
+    if row.status != "revoked":
+        row.status = "revoked"
+        row.revoked_at = _now()
+        _audit(db, current_user.id, "closed_loop_nfc_device_revoked", {
+            "card_id": row.card_id,
+            "device_id": row.id,
+        }, request)
+        db.commit()
+    return _nfc_device_payload(row)
+
+
 class TapTokenRequest(BaseModel):
     checkout_token: str = Field(min_length=20, max_length=120)
 
@@ -696,6 +834,50 @@ def get_checkout(checkout_token: str, db: Session = Depends(get_db)):
         db.commit()
     merchant = db.query(MerchantAccount).filter(MerchantAccount.id == row.merchant_id).first()
     return _checkout_payload(row, merchant)
+
+
+@router.post("/merchant/checkouts/{checkout_token}/nfc-challenge", status_code=201)
+@limiter.limit(RATE_LIMITS["closed_loop_nfc_challenge"])
+def create_nfc_challenge(
+    checkout_token: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    merchant = db.query(MerchantAccount).filter(MerchantAccount.owner_user_id == current_user.id).first()
+    if not merchant or merchant.status != "active":
+        raise HTTPException(status_code=403, detail="An active merchant account is required")
+    checkout = db.query(ClosedLoopCheckout).filter(
+        ClosedLoopCheckout.checkout_token == checkout_token,
+        ClosedLoopCheckout.merchant_id == merchant.id,
+    ).with_for_update().first()
+    if not checkout:
+        raise HTTPException(status_code=404, detail="Checkout not found")
+    if checkout.status != "open" or _aware(checkout.expires_at) <= _now():
+        raise HTTPException(status_code=409, detail="An open, unexpired checkout is required")
+    if checkout.amount_cents > NFC_MAX_AMOUNT_CENTS:
+        raise HTTPException(status_code=403, detail="NFC checkout is limited to $100.00")
+    challenge = secrets.token_bytes(32)
+    expires = _now() + timedelta(seconds=NFC_CHALLENGE_TTL_SECONDS)
+    db.query(ClosedLoopNfcChallenge).filter(
+        ClosedLoopNfcChallenge.merchant_id == merchant.id,
+        ClosedLoopNfcChallenge.expires_at < _now() - timedelta(days=1),
+    ).delete(synchronize_session=False)
+    db.add(ClosedLoopNfcChallenge(
+        checkout_id=checkout.id,
+        merchant_id=merchant.id,
+        challenge_hash=hashlib.sha256(challenge).hexdigest(),
+        expires_at=expires,
+    ))
+    db.commit()
+    return {
+        "protocol": "fawn_hce_v1",
+        "hce_aid": FAWN_HCE_AID,
+        "challenge_b64": _b64url_encode(challenge),
+        "expires_at": expires.isoformat(),
+        "requires_device_unlock": True,
+        "checkout": _checkout_payload(checkout, merchant),
+    }
 
 
 def _settle(
@@ -849,6 +1031,73 @@ def accept_tap(
     token.used_at = _now()
     result = _settle(db, checkout_token, token.user_id, token.card_id, request)
     return result | {"acceptance_method": "dynamic_tap_token"}
+
+
+class NfcAuthorizeRequest(BaseModel):
+    device_id: str = Field(min_length=32, max_length=40)
+    challenge_b64: str = Field(min_length=40, max_length=60)
+    signature_b64: str = Field(min_length=80, max_length=160)
+
+
+@router.post("/merchant/checkouts/{checkout_token}/nfc-authorize")
+@limiter.limit(RATE_LIMITS["closed_loop_nfc_authorize"])
+def authorize_nfc_checkout(
+    checkout_token: str,
+    req: NfcAuthorizeRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    merchant = db.query(MerchantAccount).filter(MerchantAccount.owner_user_id == current_user.id).first()
+    if not merchant or merchant.status != "active":
+        raise HTTPException(status_code=403, detail="An active merchant account is required")
+    checkout = db.query(ClosedLoopCheckout).filter(
+        ClosedLoopCheckout.checkout_token == checkout_token,
+        ClosedLoopCheckout.merchant_id == merchant.id,
+    ).first()
+    if not checkout:
+        raise HTTPException(status_code=404, detail="Checkout not found")
+    if checkout.status != "open" or _aware(checkout.expires_at) <= _now():
+        raise HTTPException(status_code=409, detail="An open, unexpired checkout is required")
+    challenge_bytes = _b64url_decode(req.challenge_b64, field="challenge_b64", max_bytes=32)
+    if len(challenge_bytes) != 32:
+        raise HTTPException(status_code=422, detail="challenge_b64 must contain exactly 32 bytes")
+    signature = _b64url_decode(req.signature_b64, field="signature_b64", max_bytes=80)
+    challenge = db.query(ClosedLoopNfcChallenge).filter(
+        ClosedLoopNfcChallenge.challenge_hash == hashlib.sha256(challenge_bytes).hexdigest(),
+    ).with_for_update().first()
+    if not challenge or challenge.checkout_id != checkout.id or challenge.merchant_id != merchant.id:
+        raise HTTPException(status_code=401, detail="NFC challenge is invalid")
+    if challenge.used_at is not None or _aware(challenge.expires_at) <= _now():
+        raise HTTPException(status_code=401, detail="NFC challenge is expired or already used")
+    device = db.query(ClosedLoopNfcDevice).filter(
+        ClosedLoopNfcDevice.id == req.device_id,
+        ClosedLoopNfcDevice.status == "active",
+    ).with_for_update().first()
+    if not device:
+        raise HTTPException(status_code=401, detail="NFC device is invalid or revoked")
+    card = db.query(ClosedLoopCard).filter(
+        ClosedLoopCard.id == device.card_id,
+        ClosedLoopCard.user_id == device.user_id,
+        ClosedLoopCard.status == "active",
+    ).first()
+    if not card:
+        raise HTTPException(status_code=401, detail="NFC card is unavailable")
+    try:
+        public_key = serialization.load_der_public_key(device.public_key_der)
+        if not isinstance(public_key, ec.EllipticCurvePublicKey):
+            raise ValueError("not an EC key")
+        public_key.verify(signature, FAWN_NFC_SIGNING_PREFIX + challenge_bytes, ec.ECDSA(hashes.SHA256()))
+    except (InvalidSignature, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="NFC signature is invalid") from exc
+    challenge.used_at = _now()
+    device.last_used_at = _now()
+    result = _settle(db, checkout_token, device.user_id, device.card_id, request)
+    return result | {
+        "acceptance_method": "android_hce",
+        "nfc_device_id": device.id,
+        "device_attestation_status": device.attestation_status,
+    }
 
 
 @router.get("/purchases")

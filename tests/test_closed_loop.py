@@ -1,5 +1,6 @@
 """Closed-loop card, merchant enrollment, checkout, and tap settlement tests."""
 from datetime import datetime, timedelta
+import base64
 import io
 import json
 from types import SimpleNamespace
@@ -7,10 +8,12 @@ from urllib.parse import urlsplit
 import zipfile
 
 import jwt
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from config import settings
 from database import SessionLocal
-from models import ClosedLoopCheckout, CryptoWallet, MerchantAccount, User
+from models import ClosedLoopCheckout, ClosedLoopNfcChallenge, CryptoWallet, MerchantAccount, User
 from routers import closed_loop
 
 
@@ -281,6 +284,102 @@ def test_dynamic_tap_token_is_short_lived_and_single_use(client):
         json={"tap_token": fresh_tap["tap_token"]},
     )
     assert wrong_checkout.status_code == 403
+
+
+def test_android_hce_challenge_is_checkout_bound_signed_and_single_use(client):
+    payer_id = _user("hce-payer@example.com", "hcepayer", 5_000)
+    merchant_owner_id = _user("hce-merchant@example.com", "hcemerchant", 500)
+    payer_headers = _auth(payer_id)
+    merchant_headers = _auth(merchant_owner_id)
+    card = client.post("/closed-loop/cards", headers=payer_headers).json()
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_der = private_key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    public_b64 = base64.urlsafe_b64encode(public_der).decode().rstrip("=")
+    registered = client.post("/closed-loop/cards/me/nfc-devices", headers=payer_headers, json={
+        "device_name": "Avery's Android",
+        "public_key_spki_b64": public_b64,
+    })
+    assert registered.status_code == 201, registered.text
+    device = registered.json()
+    assert device["card_id"] == card["id"]
+    assert device["hce_aid"] == "F04641574E0101"
+    assert device["requires_device_unlock"] is True
+    assert device["attestation_status"] == "unverified"
+
+    merchant = client.post("/closed-loop/merchants", headers=merchant_headers, json={
+        "business_name": "HCE Shop LLC",
+        "display_name": "HCE Shop",
+        "support_email": "help@hceshop.example",
+    }).json()
+    _approve(client, merchant["id"])
+    checkout_one = client.post("/closed-loop/merchant/checkouts", headers=merchant_headers, json={
+        "amount_cents": 500,
+        "order_reference": "hce-one",
+    }).json()
+    checkout_two = client.post("/closed-loop/merchant/checkouts", headers=merchant_headers, json={
+        "amount_cents": 600,
+        "order_reference": "hce-two",
+    }).json()
+    challenge_response = client.post(
+        f"/closed-loop/merchant/checkouts/{checkout_one['checkout_token']}/nfc-challenge",
+        headers=merchant_headers,
+    )
+    assert challenge_response.status_code == 201, challenge_response.text
+    challenge = challenge_response.json()["challenge_b64"]
+    challenge_bytes = base64.urlsafe_b64decode(challenge + "=" * (-len(challenge) % 4))
+    signature = private_key.sign(b"FAWN-NFC-v1\x00" + challenge_bytes, ec.ECDSA(hashes.SHA256()))
+    signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    payload = {"device_id": device["id"], "challenge_b64": challenge, "signature_b64": signature_b64}
+
+    wrong_checkout = client.post(
+        f"/closed-loop/merchant/checkouts/{checkout_two['checkout_token']}/nfc-authorize",
+        headers=merchant_headers,
+        json=payload,
+    )
+    assert wrong_checkout.status_code == 401
+
+    wrong_key = ec.generate_private_key(ec.SECP256R1())
+    wrong_signature = wrong_key.sign(b"FAWN-NFC-v1\x00" + challenge_bytes, ec.ECDSA(hashes.SHA256()))
+    invalid_signature = client.post(
+        f"/closed-loop/merchant/checkouts/{checkout_one['checkout_token']}/nfc-authorize",
+        headers=merchant_headers,
+        json={**payload, "signature_b64": base64.urlsafe_b64encode(wrong_signature).decode().rstrip("=")},
+    )
+    assert invalid_signature.status_code == 401
+
+    accepted = client.post(
+        f"/closed-loop/merchant/checkouts/{checkout_one['checkout_token']}/nfc-authorize",
+        headers=merchant_headers,
+        json=payload,
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["acceptance_method"] == "android_hce"
+    assert accepted.json()["payer_balance_cents"] == 4_499
+    assert accepted.json()["merchant_balance_cents"] == 999
+
+    db = SessionLocal()
+    try:
+        challenge_row = db.query(ClosedLoopNfcChallenge).filter(
+            ClosedLoopNfcChallenge.checkout_id == checkout_one["id"]
+        ).one()
+        assert challenge_row.used_at is not None
+    finally:
+        db.close()
+
+    replay = client.post(
+        f"/closed-loop/merchant/checkouts/{checkout_one['checkout_token']}/nfc-authorize",
+        headers=merchant_headers,
+        json=payload,
+    )
+    assert replay.status_code == 409
+
+    revoked = client.delete(f"/closed-loop/cards/me/nfc-devices/{device['id']}", headers=payer_headers)
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
 
 
 def test_public_merchant_application_does_not_enable_payments(client):

@@ -31,10 +31,14 @@ FAWN can also directly sign visual generic passes for Apple Wallet and Google
 Wallet after FAWN's own platform credentials are configured. Those passes
 launch FAWN; they do not silently authorize a payment.
 
-The current protocol is ready for a future Android Host Card Emulation or
-approved NFC reader integration, but Expo/web code alone does not make a phone
-emulate a payment card. Apple Wallet download links expire after five minutes,
-and the pass package is signed with FAWN's Pass Type certificate.
+FAWN now has a native Android HCE implementation and a matching FAWN Android
+merchant reader. It uses a non-exportable P-256 Android Keystore key and a
+30-second checkout-bound challenge; the phone must be unlocked. This remains
+behind a native-build and two-device physical-test gate. Expo Go and web code
+cannot emulate or read the credential. See `NFC_PROTOCOL.md`.
+
+Apple Wallet download links expire after five minutes, and the pass package is
+signed with FAWN's Pass Type certificate.
 
 Apple Pay and Google Pay payment-card provisioning remain false because a
 closed-loop credential is not a card-network payment card. Apple Wallet NFC,
