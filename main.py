@@ -323,7 +323,18 @@ _init_db_schema()
 
 app = FastAPI(
     title="FAWN API",
-    description="Student-focused banking platform. Send money instantly to anyone - FAWN users or traditional bank accounts. No monthly fees.",
+    description=(
+        "Student-focused custodial USDC payments platform. Send money instantly to any "
+        "FAWN @username or on-chain wallet address, and invest in real stocks and ETFs. "
+        "$0.01 flat fee to FAWN users, $0.50 to external wallets. No monthly fees.\n\n"
+        "Custody: FAWN creates each user's wallet and holds its signing key in "
+        "envelope-encrypted custody, signing transfers on the user's behalf. Users do "
+        "not hold their own keys.\n\n"
+        "FAWN is not a bank and balances are not FDIC insured. Payouts to an external "
+        "bank account (`POST /transfers/send-to-bank`) require Stripe Payouts "
+        "credentials and return `StripeNotConfigured` until those are set — they are "
+        "not enabled in production today."
+    ),
     version="0.2.0",
 )
 
