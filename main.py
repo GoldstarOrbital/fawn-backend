@@ -1,4 +1,4 @@
-﻿import time
+import time
 import os
 try:
     import sentry_sdk
@@ -15,7 +15,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, podcast, money_review, investing, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade, experience, repayments, networth, insights, goals, rates, closed_loop, merchant_onboarding
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, member, deals, podcast, money_review, investing, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade, experience, repayments, networth, insights, goals, rates, closed_loop, merchant_onboarding, redemptions
 from config import settings
 from logging_config import configure_logging
 
@@ -466,6 +466,7 @@ app.include_router(snaptrade.router)
 app.include_router(experience.router)
 app.include_router(closed_loop.router)
 app.include_router(merchant_onboarding.router)
+app.include_router(redemptions.router)
 
 # Serve the merchant checkout SDK (static/fawn-checkout.js) so a merchant
 # can integrate with a single <script> tag. Directory is created at import

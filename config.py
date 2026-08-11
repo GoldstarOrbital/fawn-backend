@@ -119,6 +119,20 @@ class Settings(BaseSettings):
     referral_rewards_enabled: bool = True
     referral_bonus_cents: int = 100  # $1.00 each to inviter and invitee
 
+    # ---- Stablecoin redemption (sell USDC back to FAWN at 1:1) ----
+    # FAWN is the counterparty: the user surrenders USDC and FAWN owes USD.
+    # Off by default -- every approved redemption is a real dollar obligation,
+    # so this must be switched on deliberately once a payout rail and USD float
+    # actually exist.
+    redemptions_enabled: bool = False
+    redemption_min_cents: int = 500          # $5.00 - below this, payout rails cost more than the amount
+    redemption_max_cents: int = 100_000      # $1,000 per request
+    redemption_daily_max_cents: int = 250_000  # $2,500 per user per rolling 24h
+    # Total USD FAWN can currently honor. Open (requested + approved)
+    # redemptions are checked against this so FAWN cannot accept more
+    # obligations than it can actually pay. 0 = treat as unlimited (dev only).
+    redemption_float_cents: int = 0
+
     # ---- Fraud & risk controls ----
     # Dollar caps alone don't catch a compromised account rapidly draining
     # via many small transactions, each individually under the per-tx cap --
