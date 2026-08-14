@@ -253,6 +253,13 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
     obj = event.get("data", {}).get("object", {})
 
+    # Bucks are fulfilled only by this verified server-side webhook path.
+    if event_type in ("checkout.session.completed", "charge.refunded", "charge.dispute.created"):
+        buck_metadata = obj.get("metadata") or {}
+        if buck_metadata.get("fawn_product") == "bucks" or event_type in ("charge.refunded", "charge.dispute.created"):
+            from routers.bucks import handle_buck_event
+            return handle_buck_event(event, db)
+
     # Handle Stripe Payout events (instant bank transfers)
     if event_type in ("payout.paid", "payout.failed"):
         payout_id = obj.get("id", "")

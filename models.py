@@ -108,6 +108,49 @@ class StripeEvent(Base):
     received_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class BuckFundingPayment(Base):
+    """A Stripe funding payment for off-chain Fawn Bucks service credits."""
+    __tablename__ = "buck_funding_payments"
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    stripe_checkout_session_id = Column(String, nullable=True, unique=True, index=True)
+    stripe_payment_intent_id = Column(String, nullable=True, unique=True, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    fee_cents = Column(Integer, nullable=False)
+    total_cents = Column(Integer, nullable=False)
+    buck_count = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    refunded_cents = Column(Integer, nullable=False, default=0)
+    disputed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class BuckCredit(Base):
+    """One immutable serialised Buck issued by a successful payment."""
+    __tablename__ = "buck_credits"
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    payment_id = Column(String, ForeignKey("buck_funding_payments.id"), nullable=False, index=True)
+    serial_number = Column(String, nullable=False, unique=True, index=True)
+    status = Column(String, nullable=False, default="active")
+    issued_at = Column(DateTime(timezone=True), server_default=func.now())
+    reversed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class BuckLedgerEntry(Base):
+    """Append-only audit entry; positive issuance, negative reversal."""
+    __tablename__ = "buck_ledger_entries"
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    payment_id = Column(String, ForeignKey("buck_funding_payments.id"), nullable=False, index=True)
+    entry_type = Column(String, nullable=False)
+    bucks_delta = Column(Integer, nullable=False)
+    serial_numbers = Column(Text, nullable=False, default="[]")
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class MagicLinkToken(Base):
     """Short-lived passwordless login tokens for founding-member dashboard."""
     __tablename__ = "magic_link_tokens"
