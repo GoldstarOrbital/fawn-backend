@@ -72,7 +72,7 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = "ANTHROPIC_KEY_NOT_SET"
     alpha_vantage_key: str = ""  # Free tier: 5 calls/minute for stock quotes
-    jwt_secret: str = "dev_secret_change_in_production"
+    jwt_secret: str = ""  # REQUIRED: set via JWT_SECRET env var (32+ chars)
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
     resend_api_key: str = ""
