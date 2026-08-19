@@ -186,7 +186,7 @@ async def place_buy_order(
         user_id=current_user.id,
         ticker=req.ticker.upper(),
         order_type="buy",
-        quantity=None,  # will be filled once order executes
+        quantity=0,  # unknown until filled (placeholder for MVP)
         total_cost_cents=amount_cents,
         status=result.get("status", "failed"),
         provider=provider,
