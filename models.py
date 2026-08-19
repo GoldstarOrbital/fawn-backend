@@ -212,6 +212,70 @@ class Handle(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class InvestmentHolding(Base):
+    """A user's stock or ETF position held via DSPP or ETF provider."""
+    __tablename__ = "investment_holdings"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    ticker = Column(String, nullable=False, index=True)  # AAPL, VTI, etc.
+    asset_type = Column(String, nullable=False)          # "stock" | "etf"
+    quantity = Column(Numeric(18, 8), nullable=False)    # supports fractional shares
+    cost_basis_cents = Column(Integer, nullable=False)   # total cost in cents (quantity * avg_price)
+    avg_cost_per_share_cents = Column(Integer, nullable=False)
+    current_price_cents = Column(Integer, nullable=False, default=0)  # refreshed on every portfolio load
+    provider = Column(String, nullable=False)            # "computershare" | "etf_direct" | "partner_broker"
+    provider_account_id = Column(String, nullable=True)  # external account id at the provider
+    last_price_update = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    def unrealized_gain_cents(self):
+        """Current value - cost basis."""
+        current_value = int(self.quantity) * self.current_price_cents
+        return current_value - self.cost_basis_cents
+
+
+class InvestmentOrder(Base):
+    """Buy/sell orders placed through DSPP or ETF providers."""
+    __tablename__ = "investment_orders"
+
+    id = Column(String, primary_key=True, default=new_id)
+    user_id = Column(String, nullable=False, index=True)
+    holding_id = Column(String, nullable=True, index=True)  # links to InvestmentHolding if fulfilled
+    ticker = Column(String, nullable=False)
+    order_type = Column(String, nullable=False)  # "buy" | "sell"
+    quantity = Column(Numeric(18, 8), nullable=False)
+    price_per_share_cents = Column(Integer, nullable=True)  # filled price; null until execution
+    total_cost_cents = Column(Integer, nullable=True)  # quantity * filled price
+    status = Column(String, nullable=False, default="pending")  # pending | submitted | filled | cancelled | failed
+    provider = Column(String, nullable=False)
+    provider_order_id = Column(String, nullable=True)  # external order id
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    filled_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class SecurityMaster(Base):
+    """Cached list of all available stocks and ETFs."""
+    __tablename__ = "security_master"
+
+    id = Column(String, primary_key=True, default=new_id)
+    ticker = Column(String, nullable=False, unique=True, index=True)
+    name = Column(String, nullable=False)
+    asset_type = Column(String, nullable=False)  # "stock" | "etf"
+    sector = Column(String, nullable=True)
+    industry = Column(String, nullable=True)
+    currency = Column(String, default="USD")
+    # DSPP availability
+    has_dspp = Column(Boolean, default=False)
+    dspp_provider = Column(String, nullable=True)  # "computershare" | "company_direct"
+    # ETF details
+    expense_ratio = Column(Numeric(5, 4), nullable=True)  # annual fee (e.g., 0.0003 for 0.03%)
+    holdings_count = Column(Integer, nullable=True)  # number of stocks in the ETF
+    last_updated = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class PodcastEpisode(Base):
     """One AI-generated daily news brief ("FAWN Daily Brief").
 

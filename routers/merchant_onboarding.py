@@ -501,6 +501,42 @@ def decide_kyb(kyb_id: str, req: KybDecision, db: Session = Depends(get_db)):
     return _kyb_payload(row)
 
 
+@router.post("/admin/kyb/{kyb_id}/auto-approve", dependencies=[Depends(_admin_key)])
+def auto_approve_kyb(kyb_id: str, db: Session = Depends(get_db)):
+    """Auto-approve a submitted KYB.
+
+    Low-risk merchants approve immediately. High-risk (cannabis etc.)
+    must have a valid, unexpired license to auto-approve.
+    """
+    row = db.query(MerchantKyb).filter(MerchantKyb.id == kyb_id).with_for_update().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="KYB record not found")
+    if row.status != "submitted":
+        raise HTTPException(status_code=409, detail=f"KYB is '{row.status}' and cannot be auto-approved")
+
+    # High-risk validation
+    if row.is_high_risk:
+        expires = _aware(row.state_license_expires_on)
+        if not expires or expires <= _now():
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot auto-approve high-risk merchant without a valid, unexpired state license",
+            )
+
+    row.status = "verified"
+    row.license_verified_at = _now()
+    row.license_verified_by = "system_auto_approval"
+    row.decided_at = _now()
+
+    merchant = db.query(MerchantAccount).filter(MerchantAccount.id == row.merchant_id).first()
+    if merchant:
+        _audit(db, merchant.owner_user_id, "merchant_kyb_auto_verified",
+               {"merchant_id": merchant.id, "kyb_id": row.id})
+    db.commit()
+    db.refresh(row)
+    return _kyb_payload(row)
+
+
 def license_expiry_sweep(db: Session) -> dict:
     """Flip verified high-risk merchants to `expired` once their license lapses.
 
