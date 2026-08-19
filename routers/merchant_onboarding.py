@@ -503,10 +503,13 @@ def decide_kyb(kyb_id: str, req: KybDecision, db: Session = Depends(get_db)):
 
 @router.post("/admin/kyb/{kyb_id}/auto-approve", dependencies=[Depends(_admin_key)])
 def auto_approve_kyb(kyb_id: str, db: Session = Depends(get_db)):
-    """Auto-approve a submitted KYB.
+    """Auto-approve a submitted KYB and auto-activate the merchant.
 
     Low-risk merchants approve immediately. High-risk (cannabis etc.)
     must have a valid, unexpired license to auto-approve.
+
+    When KYB is verified, the merchant is immediately activated and can
+    begin accepting payments without any additional manual step.
     """
     row = db.query(MerchantKyb).filter(MerchantKyb.id == kyb_id).with_for_update().first()
     if not row:
@@ -530,7 +533,10 @@ def auto_approve_kyb(kyb_id: str, db: Session = Depends(get_db)):
 
     merchant = db.query(MerchantAccount).filter(MerchantAccount.id == row.merchant_id).first()
     if merchant:
-        _audit(db, merchant.owner_user_id, "merchant_kyb_auto_verified",
+        # Auto-activate the merchant once KYB is verified
+        merchant.status = "active"
+        merchant.approved_at = _now()
+        _audit(db, merchant.owner_user_id, "merchant_kyb_auto_verified_and_activated",
                {"merchant_id": merchant.id, "kyb_id": row.id})
     db.commit()
     db.refresh(row)

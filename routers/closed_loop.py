@@ -454,6 +454,37 @@ def approve_merchant(merchant_id: str, db: Session = Depends(get_db)):
     return _merchant_payload(row)
 
 
+@router.post("/admin/merchants/auto-activate-by-user/{user_id}", dependencies=[Depends(_admin_key)])
+def auto_activate_merchant_by_user(user_id: str, db: Session = Depends(get_db)):
+    """Auto-activate a merchant if their KYB is verified.
+
+    Called after KYB auto-approval to immediately activate the merchant
+    account so they can start accepting payments without manual intervention.
+    """
+    from models_merchant import MerchantKyb
+
+    merchant = db.query(MerchantAccount).filter(
+        MerchantAccount.owner_user_id == user_id
+    ).with_for_update().first()
+    if not merchant:
+        raise HTTPException(status_code=404, detail="Merchant account not found")
+
+    # Check if their KYB is verified
+    kyb = db.query(MerchantKyb).filter(
+        MerchantKyb.merchant_id == merchant.id,
+        MerchantKyb.status == "verified",
+    ).first()
+    if not kyb:
+        raise HTTPException(status_code=409, detail="Merchant KYB must be verified first")
+
+    # Activate merchant
+    merchant.status = "active"
+    merchant.approved_at = _now()
+    _audit(db, user_id, "closed_loop_merchant_auto_activated", {"merchant_id": merchant.id})
+    db.commit()
+    return _merchant_payload(merchant)
+
+
 @router.post("/cards", status_code=201)
 @limiter.limit(RATE_LIMITS["closed_loop_card_issue"])
 def issue_card(
