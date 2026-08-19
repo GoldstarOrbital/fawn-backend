@@ -695,6 +695,7 @@ async def _start_fee_sweep_scheduler():
 
 @app.get("/health")
 def health():
+    # Force rebuild
     return {"status": "ok", "version": "0.2.0"}
 
 
