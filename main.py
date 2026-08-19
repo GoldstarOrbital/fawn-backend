@@ -705,7 +705,7 @@ async def _start_fee_sweep_scheduler():
 
 @app.get("/health")
 def health():
-    # Force rebuild
+    # Test if deploys are working - timestamp: 2026-08-19-22-15
     return {"status": "ok", "version": "0.2.0"}
 
 
