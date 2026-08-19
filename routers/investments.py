@@ -8,6 +8,7 @@ Regulatory: All endpoints carry investment disclaimers. Orders are logged
 for audit/compliance. Securities transactions are educational-only for
 college students and subject to parental consent (implemented at signup).
 """
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -205,17 +206,18 @@ async def place_buy_order(
             InvestmentHolding.ticker == req.ticker.upper(),
         ).first()
 
+        qty = Decimal(str(amount_cents)) / Decimal('10000')
         if existing:
             # Add to existing holding
             existing.cost_basis_cents += amount_cents
-            existing.quantity += amount_cents / 10000  # placeholder quantity
+            existing.quantity = Decimal(str(existing.quantity)) + qty
         else:
             # Create new holding
             holding = InvestmentHolding(
                 user_id=current_user.id,
                 ticker=req.ticker.upper(),
                 asset_type=sec.get("asset_type", "stock"),
-                quantity=amount_cents / 10000,
+                quantity=qty,
                 cost_basis_cents=amount_cents,
                 avg_cost_per_share_cents=0,
                 current_price_cents=0,
@@ -225,7 +227,7 @@ async def place_buy_order(
         db.commit()
 
     return {
-        "order_id": order.id,
+        "order_id": str(order.id),
         "ticker": req.ticker.upper(),
         "amount_dollars": req.amount_dollars,
         "status": result.get("status"),
@@ -257,7 +259,6 @@ async def place_sell_order(
     if not holding:
         raise HTTPException(status_code=400, detail="No holdings of this security.")
 
-    from decimal import Decimal
     if Decimal(str(holding.quantity)) < Decimal(str(req.quantity)):
         raise HTTPException(status_code=400, detail="Insufficient shares to sell.")
 
