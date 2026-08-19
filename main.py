@@ -15,17 +15,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-try:
-    from routers import investments
-    print("[startup] investments router imported successfully")
-except Exception as e:
-    import traceback
-    print(f"[startup] FAILED to import investments router: {type(e).__name__}: {e}")
-    print("[startup] Full traceback:")
-    traceback.print_exc()
-    investments = None
-
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, bucks, member, deals, podcast, money_review, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade, experience, repayments, networth, insights, goals, rates, closed_loop, merchant_onboarding, redemptions
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, bucks, member, deals, podcast, money_review, investments, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade, experience, repayments, networth, insights, goals, rates, closed_loop, merchant_onboarding, redemptions
 from config import settings
 from logging_config import configure_logging
 
@@ -472,10 +462,7 @@ app.include_router(member.router)
 app.include_router(deals.router)
 app.include_router(podcast.router)
 app.include_router(money_review.router)
-if investments:
-    app.include_router(investments.router)
-else:
-    print("[startup] Skipping investments router registration (import failed)")
+app.include_router(investments.router)
 app.include_router(snaptrade.router)
 app.include_router(experience.router)
 app.include_router(closed_loop.router)
@@ -708,8 +695,7 @@ async def _start_fee_sweep_scheduler():
 
 @app.get("/health")
 def health():
-    # Test if deploys are working - timestamp: 2026-08-19-22-25-investments-test
-    return {"status": "ok", "version": "0.2.0", "deployment_test": "investments-router"}
+    return {"status": "ok", "version": "0.2.0"}
 
 
 @app.get("/status")
