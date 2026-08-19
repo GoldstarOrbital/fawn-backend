@@ -254,14 +254,18 @@ async def place_sell_order(
         InvestmentHolding.ticker == req.ticker.upper(),
     ).first()
 
-    if not holding or holding.quantity < req.quantity:
+    if not holding:
+        raise HTTPException(status_code=400, detail="No holdings of this security.")
+
+    from decimal import Decimal
+    if Decimal(str(holding.quantity)) < Decimal(str(req.quantity)):
         raise HTTPException(status_code=400, detail="Insufficient shares to sell.")
 
     provider = "computershare" if sec["has_dspp"] else "etf_direct"
     result = await dspp.place_sell_order(
         user_id=current_user.id,
         ticker=req.ticker.upper(),
-        quantity=req.quantity,
+        quantity=float(req.quantity),
         provider=provider,
     )
 
@@ -270,7 +274,7 @@ async def place_sell_order(
         holding_id=holding.id,
         ticker=req.ticker.upper(),
         order_type="sell",
-        quantity=req.quantity,
+        quantity=Decimal(str(req.quantity)),
         status=result.get("status", "failed"),
         provider=provider,
         provider_order_id=result.get("order_id"),
@@ -282,15 +286,15 @@ async def place_sell_order(
 
     # Update portfolio: reduce holding quantity
     if result.get("status") == "pending_manual_execution":
-        holding.quantity -= req.quantity
+        holding.quantity = Decimal(str(holding.quantity)) - Decimal(str(req.quantity))
         if holding.quantity <= 0:
             db.delete(holding)
         db.commit()
 
     return {
-        "order_id": order.id,
+        "order_id": str(order.id),
         "ticker": req.ticker.upper(),
-        "quantity": req.quantity,
+        "quantity": float(req.quantity),
         "status": result.get("status"),
         "provider": provider,
         "note": result.get("note"),
