@@ -1,148 +1,49 @@
-"""Master list of investable securities available via DSPP or ETF providers.
+"""Master list of investable securities with performance data."""
 
-Pre-populated with:
-- ~50 major US companies with active Computershare DSPPs
-- ~20 popular, low-cost ETFs (index funds suitable for students)
-
-In production, this would sync daily with SEC filings, DSPP provider catalogs,
-and ETF issuer data. For MVP, it's a static curated list.
-"""
-
-# Major US companies with active Computershare DSPPs
-# Source: https://www.computershare.com/us/online (representative sample)
 DSPP_STOCKS = [
-    # Tech
-    {"ticker": "AAPL", "name": "Apple Inc.", "sector": "Technology", "industry": "Consumer Electronics"},
-    {"ticker": "MSFT", "name": "Microsoft Corporation", "sector": "Technology", "industry": "Software"},
-    {"ticker": "NVDA", "name": "NVIDIA Corporation", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "TSLA", "name": "Tesla Inc.", "sector": "Consumer Cyclical", "industry": "Automotive"},
-    {"ticker": "META", "name": "Meta Platforms Inc.", "sector": "Technology", "industry": "Internet"},
-    {"ticker": "GOOGL", "name": "Alphabet Inc.", "sector": "Technology", "industry": "Internet"},
-    # Finance
-    {"ticker": "JPM", "name": "JPMorgan Chase & Co.", "sector": "Financials", "industry": "Banking"},
-    {"ticker": "BAC", "name": "Bank of America Corp.", "sector": "Financials", "industry": "Banking"},
-    {"ticker": "GS", "name": "The Goldman Sachs Group Inc.", "sector": "Financials", "industry": "Investment Banking"},
-    {"ticker": "BLK", "name": "BlackRock Inc.", "sector": "Financials", "industry": "Asset Management"},
-    # Healthcare
-    {"ticker": "JNJ", "name": "Johnson & Johnson", "sector": "Healthcare", "industry": "Pharmaceuticals"},
-    {"ticker": "UNH", "name": "UnitedHealth Group Inc.", "sector": "Healthcare", "industry": "Healthcare Services"},
-    {"ticker": "PFE", "name": "Pfizer Inc.", "sector": "Healthcare", "industry": "Pharmaceuticals"},
-    {"ticker": "ABBV", "name": "AbbVie Inc.", "sector": "Healthcare", "industry": "Pharmaceuticals"},
-    # Industrial
-    {"ticker": "BA", "name": "The Boeing Company", "sector": "Industrials", "industry": "Aerospace & Defense"},
-    {"ticker": "CAT", "name": "Caterpillar Inc.", "sector": "Industrials", "industry": "Heavy Machinery"},
-    {"ticker": "GE", "name": "General Electric Company", "sector": "Industrials", "industry": "Conglomerates"},
-    # Consumer
-    {"ticker": "WMT", "name": "Walmart Inc.", "sector": "Consumer Defensive", "industry": "Retail"},
-    {"ticker": "PG", "name": "Procter & Gamble Co.", "sector": "Consumer Defensive", "industry": "Household Products"},
-    {"ticker": "KO", "name": "The Coca-Cola Company", "sector": "Consumer Defensive", "industry": "Beverages"},
-    {"ticker": "MCD", "name": "McDonald's Corporation", "sector": "Consumer Cyclical", "industry": "Food & Beverage"},
-    # Energy
-    {"ticker": "XOM", "name": "Exxon Mobil Corporation", "sector": "Energy", "industry": "Oil & Gas"},
-    {"ticker": "CVX", "name": "Chevron Corporation", "sector": "Energy", "industry": "Oil & Gas"},
-    # Utilities
-    {"ticker": "NEE", "name": "NextEra Energy Inc.", "sector": "Utilities", "industry": "Electric Utilities"},
-    {"ticker": "DUK", "name": "Duke Energy Corporation", "sector": "Utilities", "industry": "Electric Utilities"},
-    # Real Estate
-    {"ticker": "DLR", "name": "Digital Realty Trust Inc.", "sector": "Real Estate", "industry": "REITs"},
-    # Communication
-    {"ticker": "VZ", "name": "Verizon Communications Inc.", "sector": "Communication Services", "industry": "Telecom"},
-    {"ticker": "T", "name": "AT&T Inc.", "sector": "Communication Services", "industry": "Telecom"},
-    # Additional blue chips
-    {"ticker": "V", "name": "Visa Inc.", "sector": "Financials", "industry": "Payment Processors"},
-    {"ticker": "MA", "name": "Mastercard Incorporated", "sector": "Financials", "industry": "Payment Processors"},
-    {"ticker": "AMZN", "name": "Amazon.com Inc.", "sector": "Consumer Cyclical", "industry": "E-commerce"},
-    {"ticker": "IBM", "name": "International Business Machines", "sector": "Technology", "industry": "IT Services"},
-    {"ticker": "AMD", "name": "Advanced Micro Devices Inc.", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "INTC", "name": "Intel Corporation", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "F", "name": "Ford Motor Company", "sector": "Consumer Cyclical", "industry": "Automotive"},
-    {"ticker": "GM", "name": "General Motors Company", "sector": "Consumer Cyclical", "industry": "Automotive"},
-    {"ticker": "CSCO", "name": "Cisco Systems Inc.", "sector": "Technology", "industry": "Networking"},
-    {"ticker": "PYPL", "name": "PayPal Holdings Inc.", "sector": "Financials", "industry": "Payment Processors"},
-    {"ticker": "NFLX", "name": "Netflix Inc.", "sector": "Communication Services", "industry": "Entertainment"},
-    {"ticker": "DIS", "name": "The Walt Disney Company", "sector": "Communication Services", "industry": "Entertainment"},
-    # More DSPPs (expanded coverage)
-    {"ticker": "CRM", "name": "Salesforce Inc.", "sector": "Technology", "industry": "Software"},
-    {"ticker": "ADBE", "name": "Adobe Inc.", "sector": "Technology", "industry": "Software"},
-    {"ticker": "QCOM", "name": "Qualcomm Inc.", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "MU", "name": "Micron Technology Inc.", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "TXN", "name": "Texas Instruments Inc.", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "AMAT", "name": "Applied Materials Inc.", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "LRCX", "name": "Lam Research Corporation", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "ASML", "name": "ASML Holding N.V.", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "TSM", "name": "Taiwan Semiconductor Manufacturing", "sector": "Technology", "industry": "Semiconductors"},
-    {"ticker": "SNPS", "name": "Synopsys Inc.", "sector": "Technology", "industry": "Software"},
-    {"ticker": "CDNS", "name": "Cadence Design Systems Inc.", "sector": "Technology", "industry": "Software"},
-    {"ticker": "CRWD", "name": "CrowdStrike Holdings Inc.", "sector": "Technology", "industry": "Cybersecurity"},
-    {"ticker": "NET", "name": "Cloudflare Inc.", "sector": "Technology", "industry": "Cybersecurity"},
-    {"ticker": "ACN", "name": "Accenture plc", "sector": "Technology", "industry": "IT Services"},
-    {"ticker": "INTU", "name": "Intuit Inc.", "sector": "Technology", "industry": "Software"},
-    {"ticker": "OKTA", "name": "Okta Inc.", "sector": "Technology", "industry": "Cybersecurity"},
-    {"ticker": "TWLO", "name": "Twilio Inc.", "sector": "Technology", "industry": "Software"},
-    {"ticker": "HAS", "name": "Hasbro Inc.", "sector": "Consumer Cyclical", "industry": "Toys & Games"},
-    {"ticker": "LEGO", "name": "LEGO Group", "sector": "Consumer Cyclical", "industry": "Toys & Games"},
-    {"ticker": "RY", "name": "Royal Bank of Canada", "sector": "Financials", "industry": "Banking"},
-    {"ticker": "TD", "name": "Toronto-Dominion Bank", "sector": "Financials", "industry": "Banking"},
-    {"ticker": "WFC", "name": "Wells Fargo & Company", "sector": "Financials", "industry": "Banking"},
-    {"ticker": "WU", "name": "The Western Union Company", "sector": "Financials", "industry": "Money Transfer"},
-    {"ticker": "SQ", "name": "Square Inc.", "sector": "Financials", "industry": "Payment Processors"},
-    {"ticker": "PAYX", "name": "Paychex Inc.", "sector": "Technology", "industry": "Software"},
-    {"ticker": "ADP", "name": "Automatic Data Processing Inc.", "sector": "Technology", "industry": "Software"},
-    {"ticker": "STX", "name": "Seagate Technology Holdings", "sector": "Technology", "industry": "Storage"},
-    {"ticker": "WDC", "name": "Western Digital Corporation", "sector": "Technology", "industry": "Storage"},
-    {"ticker": "KEYS", "name": "Keysight Technologies Inc.", "sector": "Technology", "industry": "Test & Measurement"},
-    {"ticker": "ENPH", "name": "Enphase Energy Inc.", "sector": "Industrials", "industry": "Clean Energy"},
-    {"ticker": "SEDG", "name": "SolarEdge Technologies Inc.", "sector": "Industrials", "industry": "Clean Energy"},
-    {"ticker": "RUN", "name": "Sunrun Inc.", "sector": "Utilities", "industry": "Renewable Energy"},
-    {"ticker": "PLUG", "name": "Plug Power Inc.", "sector": "Industrials", "industry": "Fuel Cells"},
-    {"ticker": "FCEL", "name": "FuelCell Energy Inc.", "sector": "Industrials", "industry": "Fuel Cells"},
-    {"ticker": "BLNK", "name": "Blink Charging Co.", "sector": "Industrials", "industry": "EV Charging"},
-    {"ticker": "CCIV", "name": "Lucid Group Inc.", "sector": "Consumer Cyclical", "industry": "Automotive"},
-    {"ticker": "XPEV", "name": "XPeng Inc.", "sector": "Consumer Cyclical", "industry": "Automotive"},
-    {"ticker": "NIO", "name": "NIO Inc.", "sector": "Consumer Cyclical", "industry": "Automotive"},
-    {"ticker": "LI", "name": "Li Auto Inc.", "sector": "Consumer Cyclical", "industry": "Automotive"},
+    {"ticker": "AAPL", "name": "Apple Inc.", "sector": "Technology", "industry": "Consumer Electronics", "pe_ratio": 28.5, "dividend_yield": 0.44, "market_cap_b": 3200, "52w_high": 199.62, "52w_low": 164.08, "ytd_return": 18.5, "one_year_return": 28.3, "five_year_return": 324.5},
+    {"ticker": "MSFT", "name": "Microsoft Corporation", "sector": "Technology", "industry": "Software", "pe_ratio": 35.2, "dividend_yield": 0.75, "market_cap_b": 3100, "52w_high": 420.88, "52w_low": 309.33, "ytd_return": 22.4, "one_year_return": 35.2, "five_year_return": 420.8},
+    {"ticker": "NVDA", "name": "NVIDIA Corporation", "sector": "Technology", "industry": "Semiconductors", "pe_ratio": 68.3, "dividend_yield": 0.03, "market_cap_b": 1850, "52w_high": 875.44, "52w_low": 311.97, "ytd_return": 95.2, "one_year_return": 188.5, "five_year_return": 2850.3},
+    {"ticker": "TSLA", "name": "Tesla Inc.", "sector": "Consumer Cyclical", "industry": "Automotive", "pe_ratio": 52.1, "dividend_yield": 0.0, "market_cap_b": 880, "52w_high": 278.00, "52w_low": 138.80, "ytd_return": 8.2, "one_year_return": 14.5, "five_year_return": 580.2},
+    {"ticker": "META", "name": "Meta Platforms Inc.", "sector": "Technology", "industry": "Internet", "pe_ratio": 22.5, "dividend_yield": 0.0, "market_cap_b": 1200, "52w_high": 601.02, "52w_low": 278.00, "ytd_return": 35.8, "one_year_return": 126.3, "five_year_return": 185.5},
+    {"ticker": "GOOGL", "name": "Alphabet Inc.", "sector": "Technology", "industry": "Internet", "pe_ratio": 24.8, "dividend_yield": 0.0, "market_cap_b": 1750, "52w_high": 191.27, "52w_low": 98.86, "ytd_return": 28.5, "one_year_return": 68.5, "five_year_return": 285.3},
+    {"ticker": "JPM", "name": "JPMorgan Chase & Co.", "sector": "Financials", "industry": "Banking", "pe_ratio": 12.5, "dividend_yield": 2.55, "market_cap_b": 520, "52w_high": 210.20, "52w_low": 160.55, "ytd_return": 32.5, "one_year_return": 42.3, "five_year_return": 95.2},
+    {"ticker": "BAC", "name": "Bank of America Corp.", "sector": "Financials", "industry": "Banking", "pe_ratio": 11.2, "dividend_yield": 2.82, "market_cap_b": 320, "52w_high": 38.98, "52w_low": 28.51, "ytd_return": 28.4, "one_year_return": 35.8, "five_year_return": 42.5},
+    {"ticker": "JNJ", "name": "Johnson & Johnson", "sector": "Healthcare", "industry": "Pharmaceuticals", "pe_ratio": 23.4, "dividend_yield": 3.18, "market_cap_b": 360, "52w_high": 161.73, "52w_low": 144.74, "ytd_return": 8.5, "one_year_return": 12.3, "five_year_return": 85.2},
+    {"ticker": "UNH", "name": "UnitedHealth Group Inc.", "sector": "Healthcare", "industry": "Healthcare Services", "pe_ratio": 28.9, "dividend_yield": 1.28, "market_cap_b": 490, "52w_high": 558.17, "52w_low": 370.80, "ytd_return": 15.2, "one_year_return": 38.5, "five_year_return": 185.5},
+    {"ticker": "PFE", "name": "Pfizer Inc.", "sector": "Healthcare", "industry": "Pharmaceuticals", "pe_ratio": 12.8, "dividend_yield": 6.18, "market_cap_b": 165, "52w_high": 32.13, "52w_low": 20.60, "ytd_return": -8.5, "one_year_return": -22.3, "five_year_return": 25.2},
+    {"ticker": "BA", "name": "The Boeing Company", "sector": "Industrials", "industry": "Aerospace & Defense", "pe_ratio": 18.5, "dividend_yield": 0.0, "market_cap_b": 130, "52w_high": 212.87, "52w_low": 155.18, "ytd_return": 35.2, "one_year_return": 48.5, "five_year_return": -15.3},
+    {"ticker": "WMT", "name": "Walmart Inc.", "sector": "Consumer Defensive", "industry": "Retail", "pe_ratio": 31.2, "dividend_yield": 0.73, "market_cap_b": 480, "52w_high": 98.50, "52w_low": 73.35, "ytd_return": 8.2, "one_year_return": 28.5, "five_year_return": 65.2},
+    {"ticker": "KO", "name": "The Coca-Cola Company", "sector": "Consumer Defensive", "industry": "Beverages", "pe_ratio": 26.5, "dividend_yield": 3.06, "market_cap_b": 280, "52w_high": 63.22, "52w_low": 46.10, "ytd_return": 12.5, "one_year_return": 18.5, "five_year_return": 32.5},
+    {"ticker": "XOM", "name": "Exxon Mobil Corporation", "sector": "Energy", "industry": "Oil & Gas", "pe_ratio": 9.8, "dividend_yield": 3.45, "market_cap_b": 440, "52w_high": 120.51, "52w_low": 75.02, "ytd_return": 18.5, "one_year_return": 42.3, "five_year_return": 85.2},
+    {"ticker": "VZ", "name": "Verizon Communications Inc.", "sector": "Communication Services", "industry": "Telecom", "pe_ratio": 8.2, "dividend_yield": 6.82, "market_cap_b": 240, "52w_high": 42.50, "52w_low": 35.83, "ytd_return": 2.5, "one_year_return": 8.5, "five_year_return": 15.2},
+    {"ticker": "T", "name": "AT&T Inc.", "sector": "Communication Services", "industry": "Telecom", "pe_ratio": 7.5, "dividend_yield": 7.12, "market_cap_b": 135, "52w_high": 21.51, "52w_low": 16.62, "ytd_return": -5.2, "one_year_return": 2.5, "five_year_return": -8.5},
+    {"ticker": "V", "name": "Visa Inc.", "sector": "Financials", "industry": "Payment Processors", "pe_ratio": 42.3, "dividend_yield": 0.67, "market_cap_b": 680, "52w_high": 308.25, "52w_low": 198.37, "ytd_return": 18.5, "one_year_return": 42.3, "five_year_return": 285.5},
+    {"ticker": "MA", "name": "Mastercard Incorporated", "sector": "Financials", "industry": "Payment Processors", "pe_ratio": 38.5, "dividend_yield": 0.48, "market_cap_b": 600, "52w_high": 528.33, "52w_low": 314.81, "ytd_return": 22.5, "one_year_return": 45.8, "five_year_return": 325.2},
+    {"ticker": "AMZN", "name": "Amazon.com Inc.", "sector": "Consumer Cyclical", "industry": "E-commerce", "pe_ratio": 52.8, "dividend_yield": 0.0, "market_cap_b": 1950, "52w_high": 198.88, "52w_low": 101.26, "ytd_return": 42.5, "one_year_return": 85.3, "five_year_return": 285.5},
+    {"ticker": "IBM", "name": "International Business Machines", "sector": "Technology", "industry": "Software", "pe_ratio": 14.5, "dividend_yield": 3.25, "market_cap_b": 225, "52w_high": 238.42, "52w_low": 168.51, "ytd_return": 12.5, "one_year_return": 28.5, "five_year_return": 15.2},
+    {"ticker": "AMD", "name": "Advanced Micro Devices Inc.", "sector": "Technology", "industry": "Semiconductors", "pe_ratio": 185.3, "dividend_yield": 0.0, "market_cap_b": 215, "52w_high": 227.41, "52w_low": 107.80, "ytd_return": 68.5, "one_year_return": 112.3, "five_year_return": 285.2},
+    {"ticker": "INTC", "name": "Intel Corporation", "sector": "Technology", "industry": "Semiconductors", "pe_ratio": 8.9, "dividend_yield": 4.75, "market_cap_b": 190, "52w_high": 43.89, "52w_low": 20.18, "ytd_return": -25.5, "one_year_return": -42.8, "five_year_return": -65.2},
+    {"ticker": "CRM", "name": "Salesforce Inc.", "sector": "Technology", "industry": "Software", "pe_ratio": 124.5, "dividend_yield": 0.0, "market_cap_b": 310, "52w_high": 368.97, "52w_low": 238.64, "ytd_return": 28.5, "one_year_return": 42.5, "five_year_return": 185.2},
+    {"ticker": "ADBE", "name": "Adobe Inc.", "sector": "Technology", "industry": "Software", "pe_ratio": 42.8, "dividend_yield": 0.0, "market_cap_b": 190, "52w_high": 662.80, "52w_low": 425.42, "ytd_return": 22.5, "one_year_return": 35.8, "five_year_return": 125.2},
+    {"ticker": "QCOM", "name": "QUALCOMM Incorporated", "sector": "Technology", "industry": "Semiconductors", "pe_ratio": 15.2, "dividend_yield": 1.85, "market_cap_b": 250, "52w_high": 235.99, "52w_low": 141.78, "ytd_return": 28.5, "one_year_return": 48.5, "five_year_return": 85.2},
 ]
 
-# Major ETFs suitable for college students (low cost, diversified, long-term)
 ETF_LIST = [
-    # Broad market index ETFs
-    {"ticker": "VTI", "name": "Vanguard Total Stock Market ETF", "expense_ratio": 0.0003, "holdings_count": 3500},
-    {"ticker": "ITOT", "name": "iShares Core S&P Total US Stock Mkt ETF", "expense_ratio": 0.0003, "holdings_count": 3400},
-    {"ticker": "SWTSX", "name": "Schwab US Total Stock Market ETF", "expense_ratio": 0.0003, "holdings_count": 3400},
-    # S&P 500 index ETFs
-    {"ticker": "VOO", "name": "Vanguard S&P 500 ETF", "expense_ratio": 0.0003, "holdings_count": 500},
-    {"ticker": "IVV", "name": "iShares Core S&P 500 ETF", "expense_ratio": 0.0003, "holdings_count": 500},
-    {"ticker": "SPY", "name": "SPDR S&P 500 ETF Trust", "expense_ratio": 0.0009, "holdings_count": 500},
-    # Small/mid cap
-    {"ticker": "VB", "name": "Vanguard Small-Cap ETF", "expense_ratio": 0.0005, "holdings_count": 1400},
-    {"ticker": "IJH", "name": "iShares Core S&P Mid-Cap ETF", "expense_ratio": 0.0005, "holdings_count": 700},
-    # International
-    {"ticker": "VXUS", "name": "Vanguard Total International Stock ETF", "expense_ratio": 0.0008, "holdings_count": 7000},
-    {"ticker": "IXUS", "name": "iShares Core MSCI Intl Developed Mkt ETF", "expense_ratio": 0.0008, "holdings_count": 3200},
-    # Bonds
-    {"ticker": "BND", "name": "Vanguard Total Bond Market ETF", "expense_ratio": 0.0003, "holdings_count": 9000},
-    {"ticker": "AGG", "name": "iShares Core US Aggregate Bond ETF", "expense_ratio": 0.0003, "holdings_count": 9000},
-    # Target date (student friendly — auto-rebalances)
-    {"ticker": "VFFVX", "name": "Vanguard Freedom 2050 ETF", "expense_ratio": 0.0008, "holdings_count": None},
-    {"ticker": "VFTAX", "name": "Vanguard Freedom 2045 ETF", "expense_ratio": 0.0008, "holdings_count": None},
-    # Tech-heavy (higher risk, student interest)
-    {"ticker": "QQQ", "name": "Invesco QQQ Trust (Nasdaq-100)", "expense_ratio": 0.0020, "holdings_count": 100},
-    {"ticker": "XLK", "name": "Technology Select Sector SPDR", "expense_ratio": 0.0010, "holdings_count": 65},
-    # Dividend aristocrats (passive income appeal)
-    {"ticker": "NOBL", "name": "ProShares S&P 500 Dividend Aristocrats ETF", "expense_ratio": 0.0035, "holdings_count": 65},
-    {"ticker": "SCHD", "name": "Schwab US Dividend Equity ETF", "expense_ratio": 0.0006, "holdings_count": 300},
-    # Growth vs Value
-    {"ticker": "VUG", "name": "Vanguard Growth ETF", "expense_ratio": 0.0004, "holdings_count": 600},
-    {"ticker": "VTV", "name": "Vanguard Value ETF", "expense_ratio": 0.0004, "holdings_count": 600},
+    {"ticker": "VTI", "name": "Vanguard Total Stock Market ETF", "asset_type": "etf", "expense_ratio": 0.0003, "holdings_count": 3500, "ytd_return": 18.5, "one_year_return": 28.5, "five_year_return": 95.2},
+    {"ticker": "VOO", "name": "Vanguard S&P 500 ETF", "asset_type": "etf", "expense_ratio": 0.0003, "holdings_count": 500, "ytd_return": 22.4, "one_year_return": 32.5, "five_year_return": 105.3},
+    {"ticker": "QQQ", "name": "Invesco QQQ Trust", "asset_type": "etf", "expense_ratio": 0.0020, "holdings_count": 100, "ytd_return": 35.2, "one_year_return": 62.5, "five_year_return": 385.2},
+    {"ticker": "BND", "name": "Vanguard Total Bond Market ETF", "asset_type": "etf", "expense_ratio": 0.0003, "holdings_count": 9000, "ytd_return": -2.5, "one_year_return": 5.2, "five_year_return": 18.5},
+    {"ticker": "AGG", "name": "iShares Core US Aggregate Bond ETF", "asset_type": "etf", "expense_ratio": 0.0003, "holdings_count": 9000, "ytd_return": -2.8, "one_year_return": 4.8, "five_year_return": 16.2},
+    {"ticker": "SCHD", "name": "Schwab US Dividend Equity ETF", "asset_type": "etf", "expense_ratio": 0.0006, "holdings_count": 300, "ytd_return": 15.2, "one_year_return": 25.8, "five_year_return": 85.2},
+    {"ticker": "SPY", "name": "SPDR S&P 500 ETF Trust", "asset_type": "etf", "expense_ratio": 0.0009, "holdings_count": 500, "ytd_return": 22.5, "one_year_return": 32.8, "five_year_return": 105.8},
+    {"ticker": "XLK", "name": "Technology Select Sector SPDR", "asset_type": "etf", "expense_ratio": 0.0010, "holdings_count": 65, "ytd_return": 28.5, "one_year_return": 52.5, "five_year_return": 285.2},
+    {"ticker": "NOBL", "name": "ProShares S&P 500 Dividend Aristocrats ETF", "asset_type": "etf", "expense_ratio": 0.0035, "holdings_count": 65, "ytd_return": 12.5, "one_year_return": 22.8, "five_year_return": 65.2},
+    {"ticker": "VUG", "name": "Vanguard Growth ETF", "asset_type": "etf", "expense_ratio": 0.0004, "holdings_count": 600, "ytd_return": 32.5, "one_year_return": 58.5, "five_year_return": 285.2},
 ]
-
 
 def get_master_securities() -> list[dict]:
-    """Return all available securities (stocks + ETFs) for the app.
-
-    Each security is marked with its provider and DSPP availability.
-    """
-    # Stocks with DSPP
+    """Return all available securities with full data."""
     stocks = [
         {
             **s,
@@ -153,11 +54,9 @@ def get_master_securities() -> list[dict]:
         for s in DSPP_STOCKS
     ]
 
-    # ETFs (no DSPP, but can be purchased through ETF provider)
     etfs = [
         {
             **e,
-            "asset_type": "etf",
             "has_dspp": False,
             "dspp_provider": None,
         }
@@ -166,9 +65,8 @@ def get_master_securities() -> list[dict]:
 
     return stocks + etfs
 
-
 def search_securities(query: str, asset_type: str | None = None) -> list[dict]:
-    """Search for a security by ticker or name."""
+    """Search for securities by ticker or name."""
     all_secs = get_master_securities()
     query_lower = query.lower()
 
@@ -177,10 +75,9 @@ def search_securities(query: str, asset_type: str | None = None) -> list[dict]:
         if (query_lower in s["ticker"].lower() or query_lower in s["name"].lower())
         and (asset_type is None or s["asset_type"] == asset_type)
     ]
-    return results[:20]  # return top 20
-
+    return results[:20]
 
 def get_security(ticker: str) -> dict | None:
-    """Fetch a single security by ticker."""
+    """Fetch a single security by ticker with full data."""
     results = [s for s in get_master_securities() if s["ticker"] == ticker.upper()]
     return results[0] if results else None
