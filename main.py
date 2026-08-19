@@ -708,8 +708,8 @@ async def _start_fee_sweep_scheduler():
 
 @app.get("/health")
 def health():
-    # Test if deploys are working - timestamp: 2026-08-19-22-15
-    return {"status": "ok", "version": "0.2.0"}
+    # Test if deploys are working - timestamp: 2026-08-19-22-25-investments-test
+    return {"status": "ok", "version": "0.2.0", "deployment_test": "investments-router"}
 
 
 @app.get("/status")
