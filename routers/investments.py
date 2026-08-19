@@ -75,7 +75,7 @@ def search_securities_endpoint(req: SecuritySearchRequest):
 
 @router.get("/securities/{ticker}")
 def get_security_detail(ticker: str):
-    """Get detailed info about one security."""
+    """Get detailed info about one security with full performance data."""
     sec = get_security(ticker.upper())
     if not sec:
         raise HTTPException(status_code=404, detail=f"Security {ticker} not found.")
@@ -83,7 +83,6 @@ def get_security_detail(ticker: str):
     # Fetch live price
     price_cents = 0
     try:
-        # Attempt to get price async — wrap in sync context
         import asyncio
         loop = asyncio.new_event_loop()
         price_cents = loop.run_until_complete(dspp.get_price_cached(ticker.upper()))
@@ -91,6 +90,7 @@ def get_security_detail(ticker: str):
     except Exception as e:
         print(f"[investments] price fetch failed for {ticker}: {e}")
 
+    # Return all security fields plus live price
     return {
         **sec,
         "current_price_cents": price_cents,
