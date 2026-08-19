@@ -19,7 +19,10 @@ try:
     from routers import investments
     print("[startup] investments router imported successfully")
 except Exception as e:
+    import traceback
     print(f"[startup] FAILED to import investments router: {type(e).__name__}: {e}")
+    print("[startup] Full traceback:")
+    traceback.print_exc()
     investments = None
 
 from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, bucks, member, deals, podcast, money_review, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade, experience, repayments, networth, insights, goals, rates, closed_loop, merchant_onboarding, redemptions
