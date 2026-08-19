@@ -197,6 +197,33 @@ async def place_buy_order(
     db.commit()
     db.refresh(order)
 
+    # Update portfolio: create or update holding with order amount
+    # MVP: assume order fills immediately for portfolio display
+    if result.get("status") == "pending_manual_execution":
+        existing = db.query(InvestmentHolding).filter(
+            InvestmentHolding.user_id == current_user.id,
+            InvestmentHolding.ticker == req.ticker.upper(),
+        ).first()
+
+        if existing:
+            # Add to existing holding
+            existing.cost_basis_cents += amount_cents
+            existing.quantity += amount_cents / 10000  # placeholder quantity
+        else:
+            # Create new holding
+            holding = InvestmentHolding(
+                user_id=current_user.id,
+                ticker=req.ticker.upper(),
+                asset_type=sec.get("asset_type", "stock"),
+                quantity=amount_cents / 10000,
+                cost_basis_cents=amount_cents,
+                avg_cost_per_share_cents=0,
+                current_price_cents=0,
+                provider=provider,
+            )
+            db.add(holding)
+        db.commit()
+
     return {
         "order_id": order.id,
         "ticker": req.ticker.upper(),
@@ -252,6 +279,13 @@ async def place_sell_order(
     db.add(order)
     db.commit()
     db.refresh(order)
+
+    # Update portfolio: reduce holding quantity
+    if result.get("status") == "pending_manual_execution":
+        holding.quantity -= req.quantity
+        if holding.quantity <= 0:
+            db.delete(holding)
+        db.commit()
 
     return {
         "order_id": order.id,
