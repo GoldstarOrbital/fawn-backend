@@ -15,7 +15,14 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from rate_limiting import limiter
 from database import engine, Base, SessionLocal
-from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, bucks, member, deals, podcast, money_review, investments, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade, experience, repayments, networth, insights, goals, rates, closed_loop, merchant_onboarding, redemptions
+try:
+    from routers import investments
+    print("[startup] investments router imported successfully")
+except Exception as e:
+    print(f"[startup] FAILED to import investments router: {type(e).__name__}: {e}")
+    investments = None
+
+from routers import auth, accounts, transactions, news, waitlist, referral, admin, email_automation, public_stats, stripe_webhook, bucks, member, deals, podcast, money_review, plaid_link, onramp, crypto, trading, admin_credit, automation, webhooks, revenue, snaptrade, experience, repayments, networth, insights, goals, rates, closed_loop, merchant_onboarding, redemptions
 from config import settings
 from logging_config import configure_logging
 
@@ -462,7 +469,10 @@ app.include_router(member.router)
 app.include_router(deals.router)
 app.include_router(podcast.router)
 app.include_router(money_review.router)
-app.include_router(investments.router)
+if investments:
+    app.include_router(investments.router)
+else:
+    print("[startup] Skipping investments router registration (import failed)")
 app.include_router(snaptrade.router)
 app.include_router(experience.router)
 app.include_router(closed_loop.router)
