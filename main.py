@@ -315,6 +315,28 @@ def _init_db_schema():
             print(f"[startup] idx_one_treasury_wallet patch skipped/failed (continuing): {e}")
 
         # audit logging (user_audit_log table is created automatically via create_all)
+
+        # investment_orders.holding_id FK -- table predates the FK being
+        # added to the model, so create_all() won't retroactively add the
+        # constraint. Any pre-existing NULL/orphan holding_id values are
+        # left as-is (they're legitimate for buy orders placed before a
+        # holding existed); the constraint just protects future writes.
+        try:
+            with engine.begin() as conn:
+                exists = conn.execute(text(
+                    "SELECT 1 FROM information_schema.table_constraints "
+                    "WHERE constraint_name = 'fk_investment_orders_holding_id'"
+                )).fetchone()
+                if not exists:
+                    conn.execute(text(
+                        "ALTER TABLE investment_orders "
+                        "ADD CONSTRAINT fk_investment_orders_holding_id "
+                        "FOREIGN KEY (holding_id) REFERENCES investment_holdings(id) "
+                        "ON DELETE SET NULL NOT VALID"
+                    ))
+                    print("[startup] added investment_orders.holding_id FK constraint")
+        except Exception as e:
+            print(f"[startup] investment_orders holding_id FK patch skipped/failed (continuing): {e}")
     except Exception as e:
         print(f"[startup] schema patch pass failed (continuing): {e}")
 

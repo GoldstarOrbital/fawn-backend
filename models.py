@@ -232,7 +232,7 @@ class InvestmentHolding(Base):
 
     def unrealized_gain_cents(self):
         """Current value - cost basis."""
-        current_value = int(self.quantity) * self.current_price_cents
+        current_value = float(self.quantity) * self.current_price_cents
         return current_value - self.cost_basis_cents
 
 
@@ -242,7 +242,7 @@ class InvestmentOrder(Base):
 
     id = Column(String, primary_key=True, default=new_id)
     user_id = Column(String, nullable=False, index=True)
-    holding_id = Column(String, nullable=True, index=True)  # links to InvestmentHolding if fulfilled
+    holding_id = Column(String, ForeignKey("investment_holdings.id", ondelete="SET NULL"), nullable=True, index=True)  # links to InvestmentHolding; cleared if the holding is later fully sold and deleted
     ticker = Column(String, nullable=False)
     order_type = Column(String, nullable=False)  # "buy" | "sell"
     quantity = Column(Numeric(18, 8), nullable=False)

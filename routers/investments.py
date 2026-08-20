@@ -102,7 +102,7 @@ def get_security_detail(ticker: str):
 
 @router.get("/portfolio")
 @limiter.limit("10/minute")
-def get_portfolio(request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def get_portfolio(request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Return the user's current investment portfolio."""
     holdings = db.query(InvestmentHolding).filter(
         InvestmentHolding.user_id == current_user.id
@@ -113,8 +113,17 @@ def get_portfolio(request: Request, current_user: User = Depends(get_current_use
     total_current_value_cents = 0
 
     for h in holdings:
+        # Refresh live price for each holding
+        try:
+            live_price_cents = await dspp.get_price_cached(h.ticker)
+            if live_price_cents > 0:
+                h.current_price_cents = live_price_cents
+        except Exception as e:
+            print(f"[investments] portfolio price refresh failed for {h.ticker}: {e}")
+
         cost_basis = h.cost_basis_cents
-        current_value = int(h.quantity) * h.current_price_cents
+        quantity = float(h.quantity)
+        current_value = round(quantity * h.current_price_cents)
         gain = current_value - cost_basis
         gain_pct = (gain / cost_basis * 100) if cost_basis > 0 else 0
 
@@ -125,14 +134,17 @@ def get_portfolio(request: Request, current_user: User = Depends(get_current_use
             "id": h.id,
             "ticker": h.ticker,
             "asset_type": h.asset_type,
-            "quantity": float(h.quantity),
+            "quantity": quantity,
+            "avg_cost_per_share_cents": h.avg_cost_per_share_cents,
             "cost_basis_cents": cost_basis,
             "current_price_cents": h.current_price_cents,
             "current_value_cents": current_value,
             "unrealized_gain_cents": gain,
-            "unrealized_gain_percent": round(gain_pct, 2),
+            "unrealized_gain_percent": round(gain_pct, 4),
             "provider": h.provider,
         })
+
+    db.commit()
 
     total_unrealized_gain = total_current_value_cents - total_cost_basis_cents
     total_gain_pct = (
@@ -147,7 +159,7 @@ def get_portfolio(request: Request, current_user: User = Depends(get_current_use
             "total_cost_basis_cents": total_cost_basis_cents,
             "total_current_value_cents": total_current_value_cents,
             "total_unrealized_gain_cents": total_unrealized_gain,
-            "total_unrealized_gain_percent": round(total_gain_pct, 2),
+            "total_unrealized_gain_percent": round(total_gain_pct, 4),
             "holding_count": len(holdings),
         },
         "disclaimer": DISCLAIMER,
@@ -174,6 +186,16 @@ async def place_buy_order(
     amount_cents = int(req.amount_dollars * 100)
     provider = "computershare" if sec["has_dspp"] else "etf_direct"
 
+    # Fetch live price to compute actual share quantity
+    price_per_share_cents = await dspp.get_price_cached(req.ticker.upper())
+    if price_per_share_cents <= 0:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Unable to fetch a live price for {req.ticker}. Please try again shortly.",
+        )
+
+    quantity = Decimal(str(amount_cents)) / Decimal(str(price_per_share_cents))
+
     # Place order through provider
     result = await dspp.place_buy_order(
         user_id=current_user.id,
@@ -187,7 +209,8 @@ async def place_buy_order(
         user_id=current_user.id,
         ticker=req.ticker.upper(),
         order_type="buy",
-        quantity=0,  # unknown until filled (placeholder for MVP)
+        quantity=quantity,
+        price_per_share_cents=price_per_share_cents,
         total_cost_cents=amount_cents,
         status=result.get("status", "failed"),
         provider=provider,
@@ -206,30 +229,38 @@ async def place_buy_order(
             InvestmentHolding.ticker == req.ticker.upper(),
         ).first()
 
-        qty = Decimal(str(amount_cents)) / Decimal('10000')
         if existing:
-            # Add to existing holding
-            existing.cost_basis_cents += amount_cents
-            existing.quantity = Decimal(str(existing.quantity)) + qty
+            # Add to existing holding, recompute weighted-average cost per share
+            new_cost_basis = existing.cost_basis_cents + amount_cents
+            new_quantity = Decimal(str(existing.quantity)) + quantity
+            existing.cost_basis_cents = new_cost_basis
+            existing.quantity = new_quantity
+            existing.avg_cost_per_share_cents = int(new_cost_basis / float(new_quantity)) if new_quantity > 0 else 0
+            existing.current_price_cents = price_per_share_cents
+            order.holding_id = existing.id
         else:
             # Create new holding
             holding = InvestmentHolding(
                 user_id=current_user.id,
                 ticker=req.ticker.upper(),
                 asset_type=sec.get("asset_type", "stock"),
-                quantity=qty,
+                quantity=quantity,
                 cost_basis_cents=amount_cents,
-                avg_cost_per_share_cents=0,
-                current_price_cents=0,
+                avg_cost_per_share_cents=price_per_share_cents,
+                current_price_cents=price_per_share_cents,
                 provider=provider,
             )
             db.add(holding)
+            db.flush()
+            order.holding_id = holding.id
         db.commit()
 
     return {
         "order_id": str(order.id),
         "ticker": req.ticker.upper(),
         "amount_dollars": req.amount_dollars,
+        "quantity": float(quantity),
+        "price_per_share_cents": price_per_share_cents,
         "status": result.get("status"),
         "provider": provider,
         "note": result.get("note"),
@@ -259,23 +290,35 @@ async def place_sell_order(
     if not holding:
         raise HTTPException(status_code=400, detail="No holdings of this security.")
 
-    if Decimal(str(holding.quantity)) < Decimal(str(req.quantity)):
+    # Round to the same precision as the stored column (8 decimals) to avoid
+    # floating-point dust causing spurious "insufficient shares" failures.
+    sell_qty = Decimal(str(req.quantity)).quantize(Decimal("0.00000001"))
+    held_qty = Decimal(str(holding.quantity)).quantize(Decimal("0.00000001"))
+
+    if held_qty < sell_qty:
         raise HTTPException(status_code=400, detail="Insufficient shares to sell.")
+
+    # Fetch live price to value the sale
+    price_per_share_cents = await dspp.get_price_cached(req.ticker.upper())
 
     provider = "computershare" if sec["has_dspp"] else "etf_direct"
     result = await dspp.place_sell_order(
         user_id=current_user.id,
         ticker=req.ticker.upper(),
-        quantity=float(req.quantity),
+        quantity=float(sell_qty),
         provider=provider,
     )
+
+    proceeds_cents = round(float(sell_qty) * price_per_share_cents) if price_per_share_cents > 0 else None
 
     order = InvestmentOrder(
         user_id=current_user.id,
         holding_id=holding.id,
         ticker=req.ticker.upper(),
         order_type="sell",
-        quantity=Decimal(str(req.quantity)),
+        quantity=sell_qty,
+        price_per_share_cents=price_per_share_cents if price_per_share_cents > 0 else None,
+        total_cost_cents=proceeds_cents,
         status=result.get("status", "failed"),
         provider=provider,
         provider_order_id=result.get("order_id"),
@@ -285,17 +328,26 @@ async def place_sell_order(
     db.commit()
     db.refresh(order)
 
-    # Update portfolio: reduce holding quantity
+    # Update portfolio: reduce holding quantity, proportionally reduce cost basis
     if result.get("status") == "pending_manual_execution":
-        holding.quantity = Decimal(str(holding.quantity)) - Decimal(str(req.quantity))
-        if holding.quantity <= 0:
+        remaining_qty = held_qty - sell_qty
+        if remaining_qty <= 0:
             db.delete(holding)
+        else:
+            # Reduce cost basis proportionally so avg cost per share is preserved
+            fraction_sold = float(sell_qty) / float(held_qty)
+            holding.cost_basis_cents = round(holding.cost_basis_cents * (1 - fraction_sold))
+            holding.quantity = remaining_qty
+            if price_per_share_cents > 0:
+                holding.current_price_cents = price_per_share_cents
         db.commit()
 
     return {
         "order_id": str(order.id),
         "ticker": req.ticker.upper(),
-        "quantity": float(req.quantity),
+        "quantity": float(sell_qty),
+        "price_per_share_cents": price_per_share_cents if price_per_share_cents > 0 else None,
+        "proceeds_cents": proceeds_cents,
         "status": result.get("status"),
         "provider": provider,
         "note": result.get("note"),
@@ -317,6 +369,7 @@ def list_orders(current_user: User = Depends(get_current_user), db: Session = De
                 "ticker": o.ticker,
                 "order_type": o.order_type,
                 "quantity": float(o.quantity) if o.quantity else None,
+                "price_per_share_cents": o.price_per_share_cents,
                 "total_cost_cents": o.total_cost_cents,
                 "status": o.status,
                 "provider": o.provider,
