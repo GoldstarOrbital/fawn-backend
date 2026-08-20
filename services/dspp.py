@@ -9,12 +9,24 @@ be reviewed by compliance counsel before production launch. All orders
 are logged and carry explicit disclaimers.
 """
 import asyncio
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
 import httpx
 
 from config import settings
+
+# In-memory price cache: {ticker: (price_cents, fetched_at_epoch_seconds)}.
+# Alpha Vantage's free tier caps at 25 requests/day total -- with 99
+# securities in the catalog, fetching live on every call would exhaust the
+# entire daily quota after ~25 page views. Caching the same ticker for a
+# window means repeat requests (a user reloading their portfolio, multiple
+# users quoting the same popular ticker) cost zero extra API calls.
+# Process-local only (fine for Railway's single web instance); resets on
+# deploy/restart.
+_PRICE_CACHE: dict[str, tuple[int, float]] = {}
+_PRICE_CACHE_TTL_SECONDS = 900  # 15 minutes
 
 
 class DSPPProvider(ABC):
@@ -180,9 +192,32 @@ async def get_provider(provider_name: str) -> Optional[DSPPProvider]:
 
 
 async def get_price_cached(ticker: str) -> int:
-    """Fetch price from the default provider (Computershare handles both stocks & ETFs)."""
+    """Fetch price from the default provider (Computershare handles both stocks & ETFs).
+
+    Cached for _PRICE_CACHE_TTL_SECONDS to conserve Alpha Vantage's tiny
+    free-tier daily quota. If a live fetch fails (rate-limited, network
+    error) but a stale cached price exists, that stale price is returned
+    rather than 0 -- a slightly-old price is far more useful to a buyer
+    than an outright failure.
+    """
+    now = time.time()
+    cached = _PRICE_CACHE.get(ticker)
+    if cached and (now - cached[1]) < _PRICE_CACHE_TTL_SECONDS:
+        return cached[0]
+
     provider = PROVIDERS["computershare"]
-    return await provider.get_price(ticker)
+    price_cents = await provider.get_price(ticker)
+
+    if price_cents > 0:
+        _PRICE_CACHE[ticker] = (price_cents, now)
+        return price_cents
+
+    # Live fetch failed/rate-limited -- serve stale cache if we have one.
+    if cached:
+        print(f"[dspp] live price fetch failed for {ticker}; serving stale cached price from {int(now - cached[1])}s ago")
+        return cached[0]
+
+    return 0
 
 
 # === Public API ===
