@@ -334,6 +334,7 @@ class InvestingOrder(Base):
     symbol = Column(String, nullable=False)
     side = Column(String, nullable=False)   # buy | sell
     notional_cents = Column(Integer, nullable=True)  # dollar order (fractional), if used
+    fee_cents = Column(Integer, nullable=False, default=0)  # charged from the FAWN USDC ledger
     qty = Column(Numeric, nullable=True)             # share order, if used
     status = Column(String, nullable=False, default="pending", index=True)
     idempotency_key = Column(String, nullable=False, unique=True, index=True)
@@ -450,7 +451,7 @@ class SnapTradeUser(Base):
 class CryptoTransfer(Base):
     """Internal ledger entry for P2P USDC transfers.
 
-    Each transfer costs the sender $0.01 (1000 cents) in platform fees.
+    Each transfer costs the sender $0.01 (1 cent) in platform fees.
     Transfers are instant (no blockchain needed) — money moves in our ledger.
     No gas fees — the $0.01 is pure platform revenue.
     """
@@ -462,7 +463,7 @@ class CryptoTransfer(Base):
     recipient_address = Column(String, nullable=False, index=True)
     idempotency_key = Column(String, nullable=True, unique=True, index=True)
     amount_cents = Column(Integer, nullable=False)
-    fee_cents = Column(Integer, default=100, nullable=False)
+    fee_cents = Column(Integer, default=1, nullable=False)
     status = Column(String, default="completed", nullable=False, index=True)
     tx_hash = Column(String, nullable=True)
     chain = Column(String, nullable=True)  # "polygon" | "base" -- which chain the real on-chain settlement used
@@ -650,7 +651,7 @@ class BankTransfer(Base):
     recipient_routing_number = Column(String, nullable=False)  # last 4 stored for reference
     recipient_account_last4 = Column(String, nullable=False)  # mask for user reference
     amount_cents = Column(Integer, nullable=False)  # USDC amount (1:1 USD conversion)
-    fee_cents = Column(Integer, default=100, nullable=False)  # $0.01 = 100 cents
+    fee_cents = Column(Integer, default=1, nullable=False)  # $0.01 = 1 cent
     status = Column(String, default="pending", nullable=False, index=True)  # pending | completed | failed
     memo = Column(String, nullable=True)
     ach_id = Column(String, nullable=True, unique=True, index=True)  # reserved for a future direct-ACH processor
@@ -979,7 +980,7 @@ class CryptoTrade(Base):
     price_per_unit = Column(String, nullable=False)  # human-readable price (e.g., "$2511.55")
     slippage_tolerance_percent = Column(String, default="0.50", nullable=False)  # user's allowed slippage
     slippage_applied_percent = Column(String, nullable=True)  # actual slippage after execution
-    platform_fee_cents = Column(Integer, default=100, nullable=False)  # $0.01 = 100 cents
+    platform_fee_cents = Column(Integer, default=1, nullable=False)  # $0.01 = 1 cent
     gas_estimate_cents = Column(Integer, nullable=True)  # Uniswap gas cost estimate
     actual_gas_used_cents = Column(Integer, nullable=True)  # actual after tx confirmed
     total_cost_cents = Column(Integer, nullable=True)  # fee + gas combined (fee + gas estimate at quote time)

@@ -13,12 +13,13 @@ from models import User, InvestingOrder
 from config import settings
 
 
-def _create_user(email, alpaca_account_id=None):
+def _create_user(email, alpaca_account_id=None, usdc_balance_cents=100):
     db = SessionLocal()
     try:
         user = User(
             email=email.lower(), hashed_password="x", full_name="Invest Tester",
             is_student=True, alpaca_account_id=alpaca_account_id,
+            usdc_balance_cents=usdc_balance_cents,
         )
         db.add(user)
         db.commit()
@@ -81,6 +82,45 @@ def test_place_order_happy_path(client, monkeypatch):
     body = resp.json()
     assert body["order_id"] == "ord_1"
     assert body["symbol"] == "AAPL"
+    assert body["fee_cents"] == 1
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).one()
+        assert user.usdc_balance_cents == 99
+        assert user.total_fees_paid_cents == 1
+    finally:
+        db.close()
+
+
+def test_place_order_rejects_when_one_cent_fee_cannot_be_collected(client, monkeypatch):
+    async def fake_order(*args, **kwargs):
+        raise AssertionError("Provider must not be called without the fee")
+
+    monkeypatch.setattr("routers.investing.alpaca_svc.place_order", fake_order)
+    user_id = _create_user(f"inv_{uuid.uuid4().hex[:8]}@example.com", alpaca_account_id="alp_fee", usdc_balance_cents=0)
+    resp = client.post("/investing/orders", headers=_auth(_token_for(user_id)),
+                       json={"symbol": "AAPL", "side": "buy", "notional": 25})
+    assert resp.status_code == 402
+    assert "$0.01" in resp.json()["detail"]
+
+
+def test_place_order_refunds_fee_when_provider_fails(client, monkeypatch):
+    async def fake_order(*args, **kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr("routers.investing.alpaca_svc.place_order", fake_order)
+    user_id = _create_user(f"inv_{uuid.uuid4().hex[:8]}@example.com", alpaca_account_id="alp_fail", usdc_balance_cents=1)
+    resp = client.post("/investing/orders", headers=_auth(_token_for(user_id)),
+                       json={"symbol": "AAPL", "side": "buy", "notional": 25})
+    assert resp.status_code == 502
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).one()
+        assert user.usdc_balance_cents == 1
+        assert user.total_fees_paid_cents == 0
+    finally:
+        db.close()
 
 
 def test_place_order_enforces_protective_per_order_limit(client):

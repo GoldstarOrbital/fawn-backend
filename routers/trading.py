@@ -19,7 +19,7 @@ FLOW:
 3. User calls GET /history to see past trades and P&L
 
 FEES:
-- Platform fee: $0.01 flat (100 cents) per trade
+- Platform fee: $0.01 flat (1 cent) per trade
 - Gas fees: Uniswap gas cost estimate (varies by liquidity/route)
 - No slippage, no hidden charges
 
@@ -57,7 +57,7 @@ TRADES_PER_DAY = 100
 TRADES_PER_HOUR = 20
 
 # Platform fees (in cents)
-PLATFORM_FEE_CENTS = 100  # $0.01
+PLATFORM_FEE_CENTS = 1  # $0.01
 
 
 # ── REQUEST/RESPONSE SCHEMAS ──

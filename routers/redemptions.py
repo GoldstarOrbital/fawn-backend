@@ -1,4 +1,4 @@
-"""Stablecoin redemption — sell USDC back to FAWN at exactly 1:1 for USD.
+"""Stablecoin redemption — sell USDC back to FAWN for USD less a 1-cent fee.
 
 FAWN's own cash-out rail, independent of Stripe.
 
@@ -19,7 +19,8 @@ MONEY-SAFETY INVARIANTS
 2. Rejection, cancellation, and payment failure refund the exact held amount.
    Escrow is always either held, refunded, or consumed — never lost, never
    duplicated.
-3. `payout_cents == usdc_cents` always (also a DB CHECK). No spread, ever.
+3. The disclosed one-cent fee is recorded separately and
+   `payout_cents + fee_cents == usdc_cents` (also a DB CHECK).
 4. Every balance-changing path takes a row lock (`with_for_update`) on both the
    user and the redemption, so concurrent requests cannot race the balance.
 5. FAWN never moves fiat here. An operator pays through a real banking rail and
@@ -52,6 +53,7 @@ from models import User, UserAuditLog
 from models_redemption import OPEN_STATUSES, PAYOUT_METHODS, StablecoinRedemption
 
 router = APIRouter(prefix="/redemptions", tags=["redemptions"])
+REDEMPTION_FEE_CENTS = 1
 
 ADMIN_HEADER = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
@@ -110,6 +112,8 @@ def _payload(row: StablecoinRedemption) -> dict:
         "usdc": round(row.usdc_cents / 100, 2),
         "payout_cents": row.payout_cents,
         "payout_usd": round(row.payout_cents / 100, 2),
+        "fee_cents": row.fee_cents,
+        "fee_usd": round(row.fee_cents / 100, 2),
         "rate": "1:1",
         "status": row.status,
         "held_cents": row.held_cents,
@@ -175,9 +179,9 @@ def quote(
         reasons.append(f"Would exceed your 24h limit of ${settings.redemption_daily_max_cents / 100:.2f}")
     return {
         "amount_cents": amount_cents,
-        "payout_cents": amount_cents,     # 1:1, no spread
+        "payout_cents": amount_cents - REDEMPTION_FEE_CENTS,
         "rate": "1:1",
-        "fee_cents": 0,
+        "fee_cents": REDEMPTION_FEE_CENTS,
         "eligible": not reasons,
         "reasons": reasons,
         "balance_cents": balance,
@@ -193,7 +197,7 @@ def request_redemption(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Sell USDC back to FAWN at 1:1. The USDC is held immediately."""
+    """Sell USDC back to FAWN less the disclosed one-cent fee."""
     _require_enabled()
 
     if req.idempotency_key:
@@ -225,8 +229,9 @@ def request_redemption(
         )
 
     # FAWN must not promise more dollars than it can actually pay.
+    payout_cents = req.amount_cents - REDEMPTION_FEE_CENTS
     if settings.redemption_float_cents > 0:
-        if _open_float_cents(db) + req.amount_cents > settings.redemption_float_cents:
+        if _open_float_cents(db) + payout_cents > settings.redemption_float_cents:
             raise HTTPException(
                 status_code=503,
                 detail="Cash-out capacity is temporarily exhausted. Your balance is unaffected — try again later.",
@@ -237,7 +242,8 @@ def request_redemption(
     row = StablecoinRedemption(
         user_id=user.id,
         usdc_cents=req.amount_cents,
-        payout_cents=req.amount_cents,   # 1:1
+        payout_cents=payout_cents,
+        fee_cents=REDEMPTION_FEE_CENTS,
         held_cents=req.amount_cents,
         status="requested",
         destination_label=req.destination_label,

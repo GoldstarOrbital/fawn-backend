@@ -35,6 +35,7 @@ router = APIRouter(prefix="/investing", tags=["investing"])
 MAX_ORDER_NOTIONAL_CENTS = 100_000       # $1,000 per order
 DAILY_ORDER_NOTIONAL_CENTS = 250_000     # $2,500 rolling 24-hour turnover
 MAX_OPEN_ORDERS = 5
+INVESTING_ORDER_FEE_CENTS = 1
 
 
 class OpenAccountRequest(BaseModel):
@@ -148,9 +149,20 @@ async def place_order(request: Request, req: OrderRequest,
     if existing:
         raise HTTPException(status_code=409, detail="Duplicate order.")
 
+    # Brokerage cash remains with Alpaca. The plainly disclosed FAWN order fee
+    # is charged separately from the user's custodial USDC ledger and refunded
+    # if the provider cannot accept the order.
+    fee_payer = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+    if not fee_payer:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if (fee_payer.usdc_balance_cents or 0) < INVESTING_ORDER_FEE_CENTS:
+        raise HTTPException(status_code=402, detail="A $0.01 FAWN investing fee requires at least $0.01 USDC balance.")
+    fee_payer.usdc_balance_cents = (fee_payer.usdc_balance_cents or 0) - INVESTING_ORDER_FEE_CENTS
+    fee_payer.total_fees_paid_cents = (fee_payer.total_fees_paid_cents or 0) + INVESTING_ORDER_FEE_CENTS
+
     order_row = InvestingOrder(
         user_id=current_user.id, symbol=req.symbol.upper(), side=req.side,
-        notional_cents=order_size_cents,
+        notional_cents=order_size_cents, fee_cents=INVESTING_ORDER_FEE_CENTS,
         qty=req.qty, status="pending", idempotency_key=idem,
     )
     db.add(order_row)
@@ -164,9 +176,13 @@ async def place_order(request: Request, req: OrderRequest,
     except Exception as e:
         order_row.status = "failed"
         order_row.error_message = str(e)[:500]
+        fee_payer = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+        if fee_payer:
+            fee_payer.usdc_balance_cents = (fee_payer.usdc_balance_cents or 0) + order_row.fee_cents
+            fee_payer.total_fees_paid_cents = max(0, (fee_payer.total_fees_paid_cents or 0) - order_row.fee_cents)
         db.commit()
         capture(current_user.id, EVENTS.get("investing_order_failed", "investing.order_failed"),
-                {"symbol": req.symbol, "side": req.side, "error": str(e)[:100]})
+                {"symbol": req.symbol, "side": req.side, "error": str(e)[:100], "fee_refunded_cents": order_row.fee_cents})
         raise _svc_error(e)
 
     order_row.alpaca_order_id = result.get("id")
@@ -174,10 +190,11 @@ async def place_order(request: Request, req: OrderRequest,
     db.commit()
 
     capture(current_user.id, EVENTS.get("investing_order_placed", "investing.order_placed"),
-            {"symbol": req.symbol, "side": req.side, "notional": req.notional, "qty": req.qty})
+            {"symbol": req.symbol, "side": req.side, "notional": req.notional, "qty": req.qty, "fee_cents": order_row.fee_cents})
 
     return {"order_id": order_row.alpaca_order_id, "status": order_row.status,
-            "symbol": order_row.symbol, "side": order_row.side}
+            "symbol": order_row.symbol, "side": order_row.side,
+            "fee_cents": order_row.fee_cents, "fee_usd": round(order_row.fee_cents / 100, 2)}
 
 
 @router.get("/positions")

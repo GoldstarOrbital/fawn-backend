@@ -53,7 +53,7 @@ except ImportError:
 
 
 INTERNAL_TRANSFER_FEE_CENTS = 1  # $0.01 for FAWN-to-FAWN transfers (friends, internal)
-EXTERNAL_TRANSFER_FEE_CENTS = 50  # $0.50 for external wallet/bank transfers
+EXTERNAL_TRANSFER_FEE_CENTS = 1  # $0.01 for external wallet/bank transfers
 USDC_CHAIN = os.environ.get("USDC_CHAIN", "polygon")  # "polygon" | "ethereum"
 
 # BIP39 HD derivation path for Ethereum (standard)

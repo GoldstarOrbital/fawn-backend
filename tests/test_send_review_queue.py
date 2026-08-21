@@ -261,7 +261,7 @@ def test_admin_reject_leaves_ledger_untouched():
         balance_before = user.usdc_balance_cents
         transfer = CryptoTransfer(
             sender_id=user.id, recipient_address="0x" + "7" * 40,
-            amount_cents=60_000, fee_cents=50, status="pending_review",
+            amount_cents=60_000, fee_cents=1, status="pending_review",
         )
         db.add(transfer)
         db.commit()
@@ -296,7 +296,7 @@ def test_admin_approve_rejects_if_balance_no_longer_sufficient():
         user = _make_custodial_user(db)
         transfer = CryptoTransfer(
             sender_id=user.id, recipient_address="0x" + "7" * 40,
-            amount_cents=60_000, fee_cents=50, status="pending_review",
+            amount_cents=60_000, fee_cents=1, status="pending_review",
         )
         db.add(transfer)
         # Drain the balance after the hold was created, before approval.
@@ -323,7 +323,7 @@ def test_pending_transfers_endpoint_lists_held_sends():
         user = _make_custodial_user(db)
         db.add(CryptoTransfer(
             sender_id=user.id, recipient_address="0x" + "7" * 40,
-            amount_cents=60_000, fee_cents=50, status="pending_review",
+            amount_cents=60_000, fee_cents=1, status="pending_review",
         ))
         db.commit()
         user_id = user.id
@@ -356,7 +356,7 @@ def test_concurrent_approval_cannot_double_send():
         user = _make_custodial_user(db)
         transfer = CryptoTransfer(
             sender_id=user.id, recipient_address="0x" + "7" * 40,
-            amount_cents=60_000, fee_cents=50, status="approving",
+            amount_cents=60_000, fee_cents=1, status="approving",
         )
         db.add(transfer)
         db.commit()

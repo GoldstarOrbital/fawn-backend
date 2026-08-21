@@ -1,4 +1,4 @@
-"""Tests for stablecoin redemption (sell USDC back to FAWN at 1:1).
+"""Tests for stablecoin redemption (sell USDC back to FAWN less a 1-cent fee).
 
 These are money-safety tests. The invariants that matter:
   - escrow is debited at request time (no double-spend while pending)
@@ -65,11 +65,12 @@ def test_request_debits_balance_immediately(client):
     assert _balance(uid) == 30_000
 
 
-def test_payout_is_exactly_one_to_one(client):
+def test_payout_deducts_the_disclosed_one_cent_fee(client):
     h, _ = _user(client)
     body = client.post("/redemptions", headers=h, json={"amount_cents": 12_345}).json()
     assert body["usdc_cents"] == 12_345
-    assert body["payout_cents"] == 12_345
+    assert body["payout_cents"] == 12_344
+    assert body["fee_cents"] == 1
     assert body["rate"] == "1:1"
 
 
@@ -192,7 +193,7 @@ def test_quote_reports_eligibility_without_creating(client):
     h, uid = _user(client, 50_000)
     q = client.get("/redemptions/quote?amount_cents=20000", headers=h).json()
     assert q["eligible"] is True
-    assert q["payout_cents"] == 20_000 and q["fee_cents"] == 0
+    assert q["payout_cents"] == 19_999 and q["fee_cents"] == 1
     assert _balance(uid) == 50_000  # nothing created
 
     bad = client.get("/redemptions/quote?amount_cents=999999", headers=h).json()
@@ -218,12 +219,13 @@ def test_cannot_redeem_another_users_redemption(client):
     assert client.post(f"/redemptions/{rid}/cancel", headers=h2).status_code == 404
 
 
-def test_one_to_one_is_a_db_constraint(client):
-    """A spread must be impossible even if code tries to introduce one."""
+def test_payout_plus_fee_is_a_db_constraint(client):
+    """A redemption cannot hide a fee or pay out more than the held USDC."""
     h, uid = _user(client, 50_000)
     db = SessionLocal()
     try:
-        row = StablecoinRedemption(user_id=uid, usdc_cents=10_000, payout_cents=9_500, held_cents=10_000)
+        row = StablecoinRedemption(user_id=uid, usdc_cents=10_000, payout_cents=9_999,
+                                  fee_cents=0, held_cents=10_000)
         db.add(row)
         with pytest.raises(Exception):
             db.commit()

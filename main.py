@@ -127,6 +127,29 @@ def _init_db_schema():
         _patch("users", "usdc_balance_cents", "usdc_balance_cents INTEGER DEFAULT 0 NOT NULL")
         _patch("users", "wallet_initialized", "wallet_initialized BOOLEAN DEFAULT FALSE NOT NULL")
         _patch("users", "total_fees_paid_cents", "total_fees_paid_cents INTEGER DEFAULT 0 NOT NULL")
+        _patch("investing_orders", "fee_cents", "fee_cents INTEGER DEFAULT 0 NOT NULL")
+        _patch("stablecoin_redemptions", "fee_cents", "fee_cents INTEGER DEFAULT 0 NOT NULL")
+
+        # Existing redemptions were zero-fee and used the old exact-1:1
+        # constraint. Replace it with payout + fee = held USDC so those rows
+        # stay valid while new rows disclose the one-cent fee explicitly.
+        try:
+            with engine.begin() as conn:
+                exists = conn.execute(text(
+                    "SELECT 1 FROM pg_constraint WHERE conname = 'ck_redemption_one_to_one'"
+                )).fetchone()
+                if exists:
+                    conn.execute(text("ALTER TABLE stablecoin_redemptions DROP CONSTRAINT ck_redemption_one_to_one"))
+                    conn.execute(text(
+                        "ALTER TABLE stablecoin_redemptions ADD CONSTRAINT ck_redemption_payout_and_fee "
+                        "CHECK (payout_cents + fee_cents = usdc_cents)"
+                    ))
+                    conn.execute(text(
+                        "ALTER TABLE stablecoin_redemptions ADD CONSTRAINT ck_redemption_fee_nonneg "
+                        "CHECK (fee_cents >= 0)"
+                    ))
+        except Exception as e:
+            print(f"[startup] redemption fee constraint patch skipped/failed (continuing): {e}")
 
         # user_audit_log columns
         _patch("user_audit_log", "retention_expires_at", "retention_expires_at TIMESTAMP WITH TIME ZONE")
@@ -326,7 +349,7 @@ app = FastAPI(
     description=(
         "Student-focused custodial USDC payments platform. Send money instantly to any "
         "FAWN @username or on-chain wallet address, and invest in real stocks and ETFs. "
-        "$0.01 flat fee to FAWN users, $0.50 to external wallets. No monthly fees.\n\n"
+        "$0.01 flat fee for transfers, crypto trades, investing orders, and cash-outs. No monthly fees.\n\n"
         "Custody: FAWN creates each user's wallet and holds its signing key in "
         "envelope-encrypted custody, signing transfers on the user's behalf. Users do "
         "not hold their own keys.\n\n"

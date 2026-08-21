@@ -1,4 +1,4 @@
-"""Stablecoin redemption: user sells USDC back to FAWN at exactly 1:1 for USD.
+"""Stablecoin redemption: user sells USDC back to FAWN for USD less a 1-cent fee.
 
 This is FAWN's own cash-out rail, independent of Stripe. FAWN is the
 counterparty: the user surrenders USDC ledger balance and FAWN owes them USD.
@@ -12,12 +12,12 @@ request a $500 redemption and then spend the same $500 before it was paid —
 FAWN would pay out dollars it never received USDC for. Rejection and
 cancellation refund the exact held amount.
 
-EXACTLY 1:1, NO SPREAD
-----------------------
-`payout_cents == usdc_cents`, enforced by a DB CHECK constraint. FAWN makes
-its money on the $0.01 transfer fee, not on a redemption spread. Encoding this
-as a constraint rather than a convention means a future code change cannot
-quietly introduce a spread.
+FEE DISCLOSURE AND ACCOUNTING
+-----------------------------
+Each completed redemption has a flat $0.01 fee. `payout_cents + fee_cents ==
+usdc_cents` is enforced by a DB CHECK constraint. Keeping the fee in its own
+field preserves historical zero-fee redemptions while making the current fee
+explicit in the customer and operations records.
 
 WHAT THIS MODULE DOES NOT DO
 ----------------------------
@@ -47,15 +47,16 @@ OPEN_STATUSES = ("requested", "approved")
 
 
 class StablecoinRedemption(Base):
-    """One user's request to sell USDC back to FAWN for USD at 1:1."""
+    """One user's request to sell USDC back to FAWN less the disclosed fee."""
     __tablename__ = "stablecoin_redemptions"
 
     id = Column(String, primary_key=True, default=new_id)
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
-    # Amounts. Equal by construction — see the CHECK constraint below.
+    # Amounts. Payout plus fee equals the USDC held — see CHECK constraint.
     usdc_cents = Column(Integer, nullable=False)
     payout_cents = Column(Integer, nullable=False)
+    fee_cents = Column(Integer, nullable=False, default=0)
 
     status = Column(String, nullable=False, default="requested", index=True)
 
@@ -88,8 +89,8 @@ class StablecoinRedemption(Base):
             "status IN ('requested','approved','paid','rejected','cancelled','failed')",
             name="ck_redemption_status",
         ),
-        # 1:1 is a database invariant, not a convention.
-        CheckConstraint("payout_cents = usdc_cents", name="ck_redemption_one_to_one"),
+        CheckConstraint("payout_cents + fee_cents = usdc_cents", name="ck_redemption_payout_and_fee"),
+        CheckConstraint("fee_cents >= 0", name="ck_redemption_fee_nonneg"),
         CheckConstraint("usdc_cents > 0", name="ck_redemption_positive"),
         CheckConstraint("held_cents >= 0", name="ck_redemption_held_nonneg"),
         Index("idx_redemption_queue", "status", "requested_at"),
