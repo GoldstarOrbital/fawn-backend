@@ -86,8 +86,7 @@ def test_closed_loop_purchase_charges_exact_one_cent_to_each_side(client):
     })
     assert merchant.status_code == 201, merchant.text
     merchant_id = merchant.json()["id"]
-    assert merchant.json()["status"] == "pending_review"
-    _approve(client, merchant_id)
+    assert merchant.json()["status"] == "active"
 
     checkout_headers = {**merchant_headers, "Idempotency-Key": "latte-order-001"}
     checkout = client.post("/closed-loop/merchant/checkouts", headers=checkout_headers, json={

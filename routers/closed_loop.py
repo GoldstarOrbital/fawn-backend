@@ -418,11 +418,13 @@ def create_merchant(
         website=req.website.strip() if req.website else None,
         support_email=req.support_email.strip().lower(),
         transaction_fee_cents=MERCHANT_FEE_CENTS,
+        status="active",
+        approved_at=_now(),
     )
     db.add(row)
     try:
         db.flush()
-        _audit(db, current_user.id, "closed_loop_merchant_applied", {"merchant_id": row.id}, request)
+        _audit(db, current_user.id, "closed_loop_merchant_activated", {"merchant_id": row.id}, request)
         db.commit()
     except IntegrityError:
         db.rollback()
