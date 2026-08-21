@@ -215,7 +215,7 @@ async def test_admin_approve_executes_the_real_send(monkeypatch):
         assert transfer.tx_hash is not None
 
         refreshed_user = db2.query(User).filter(User.id == user.id).first()
-        assert refreshed_user.usdc_balance_cents == balance_before - 60_000 - 50  # amount + $0.50 external fee
+        assert refreshed_user.usdc_balance_cents == balance_before - 60_000 - 1  # amount + $0.01 external fee
     finally:
         db2.close()
 
@@ -249,7 +249,7 @@ async def test_admin_approve_accrues_pending_fee_for_treasury_sweep(monkeypatch)
     db2 = SessionLocal()
     try:
         wallet_row = db2.query(CryptoWallet).filter(CryptoWallet.user_id == user.id).first()
-        assert wallet_row.pending_fee_cents == 50  # the $0.50 external fee, now owed to treasury
+        assert wallet_row.pending_fee_cents == 1  # the $0.01 external fee, now owed to treasury
     finally:
         db2.close()
 
